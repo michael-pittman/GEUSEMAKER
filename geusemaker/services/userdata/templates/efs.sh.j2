@@ -48,7 +48,10 @@ client = session.create_client("efs", region_name=region)
 try:
     targets = client.describe_mount_targets(FileSystemId=fs_id).get("MountTargets", [])
 except (ClientError, BotoCoreError) as exc:
-    print(f"WARNING: Could not validate EFS mount targets: {exc}")
+    if getattr(exc, \"response\", {}).get(\"Error\", {}).get(\"Code\") == \"AccessDeniedException\":
+        print(f\"ERROR: Access denied when validating EFS mount targets: {exc}\")
+        sys.exit(2)
+    print(f\"WARNING: Could not validate EFS mount targets: {exc}\")
     sys.exit(0)
 
 if not targets:
@@ -87,6 +90,12 @@ PY
             echo "ERROR: Failed to install amazon-efs-utils"
             exit 1
         fi
+    fi
+
+    # Final verification that mount helper exists
+    if ! command -v mount.efs >/dev/null 2>&1 && [ ! -x /sbin/mount.efs ]; then
+        echo "ERROR: amazon-efs-utils installation failed; mount.efs helper not found."
+        exit 1
     fi
 
     # Create mount point
