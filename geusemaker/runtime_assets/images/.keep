@@ -1,0 +1,1 @@
+# Place preloaded Docker image tarballs here (e.g., n8n.tar.gz). UserData will docker load them before compose up.

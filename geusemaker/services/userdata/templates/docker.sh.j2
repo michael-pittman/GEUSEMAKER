@@ -44,6 +44,28 @@ else
 
     pkg_update_once
 
+    install_compose_plugin_from_bundle() {
+        local bundle_dir="${GEUSEMAKER_RUNTIME_DIR:-/opt/geusemaker/runtime}"
+        local candidate=""
+
+        if [ -d "$bundle_dir/docker/cli-plugins" ]; then
+            candidate=$(find "$bundle_dir/docker/cli-plugins" -maxdepth 1 -type f -name "docker-compose*" | head -n1 || true)
+        fi
+        if [ -z "$candidate" ] && [ -d "$bundle_dir/bin" ]; then
+            candidate=$(find "$bundle_dir/bin" -maxdepth 1 -type f -name "docker-compose*" | head -n1 || true)
+        fi
+
+        if [ -z "$candidate" ]; then
+            return 1
+        fi
+
+        echo "Installing Docker Compose plugin from bundled file: $candidate"
+        mkdir -p /usr/local/lib/docker/cli-plugins
+        cp "$candidate" /usr/local/lib/docker/cli-plugins/docker-compose
+        chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        return 0
+    }
+
     # Install Docker based on OS
     if [ "$OS_FAMILY" = "debian" ]; then
         echo "Setting up Docker repository for Debian/Ubuntu..."
@@ -78,11 +100,13 @@ else
         fi
 
         # Install Docker Compose plugin for Amazon Linux
-        DOCKER_COMPOSE_VERSION="2.24.5"
-        mkdir -p /usr/local/lib/docker/cli-plugins
-        curl -SL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
-            -o /usr/local/lib/docker/cli-plugins/docker-compose
-        chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        if ! install_compose_plugin_from_bundle; then
+            DOCKER_COMPOSE_VERSION="2.24.5"
+            mkdir -p /usr/local/lib/docker/cli-plugins
+            curl -SL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+                -o /usr/local/lib/docker/cli-plugins/docker-compose
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+        fi
     fi
 
     # Ensure Docker data root lives on EFS
@@ -118,6 +142,9 @@ else
     nvidia-ctk runtime configure --runtime=docker
     systemctl restart docker
 {% endif %}
+
+    # Ensure docker compose plugin is present (Debian/Ubuntu may still be overridden by bundle)
+    install_compose_plugin_from_bundle || true
 
     # Verify Docker is running
     if ! docker info > /dev/null 2>&1; then

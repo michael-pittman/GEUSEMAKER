@@ -41,6 +41,25 @@ trap 'handle_error $LINENO' ERR
 
 echo "Starting GeuseMaker initialization..."
 
+# Runtime bundle setup (optional)
+GEUSEMAKER_RUNTIME_DIR="/opt/geusemaker/runtime"
+COMPOSE_FILE_PATH="/root/docker-compose.yml"
+mkdir -p "$GEUSEMAKER_RUNTIME_DIR"
+
+{% if use_runtime_bundle %}
+RUNTIME_BUNDLE_FILE="$GEUSEMAKER_RUNTIME_DIR/{{ runtime_bundle_filename }}"
+echo "Unpacking runtime bundle into $GEUSEMAKER_RUNTIME_DIR"
+cat <<"__GEUSE_BUNDLE__" | base64 -d > "$RUNTIME_BUNDLE_FILE"
+{{ runtime_bundle_b64 }}
+__GEUSE_BUNDLE__
+tar -xzf "$RUNTIME_BUNDLE_FILE" -C "$GEUSEMAKER_RUNTIME_DIR"
+COMPOSE_FILE_PATH="$GEUSEMAKER_RUNTIME_DIR/docker-compose.yml"
+{% else %}
+RUNTIME_BUNDLE_FILE=""
+{% endif %}
+RUNTIME_ENV_FILE="$(dirname "$COMPOSE_FILE_PATH")/runtime.env"
+export GEUSEMAKER_RUNTIME_DIR COMPOSE_FILE_PATH RUNTIME_ENV_FILE
+
 # OS detection and package helpers
 detect_os_family() {
     if [ -f /etc/os-release ]; then

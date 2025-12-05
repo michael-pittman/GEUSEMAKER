@@ -8,30 +8,54 @@ if [ -f "$SERVICES_GUARD" ]; then
 else
     echo "Configuring Docker Compose services..."
 
-    # Create Docker Compose file
-    cat > /root/docker-compose.yml <<'EOF'
-version: '3.8'
+    use_runtime_bundle="{{ 'true' if use_runtime_bundle else 'false' }}"
+
+    run_compose() {
+        if command -v docker-compose >/dev/null 2>&1; then
+            docker-compose -f "$COMPOSE_FILE_PATH" "$@"
+        else
+            docker compose -f "$COMPOSE_FILE_PATH" "$@"
+        fi
+    }
+
+    write_runtime_env() {
+        local env_dir
+        env_dir="$(dirname "$RUNTIME_ENV_FILE")"
+        mkdir -p "$env_dir"
+        cat > "$RUNTIME_ENV_FILE" <<'EOF'
+N8N_PORT={{ n8n_port }}
+OLLAMA_PORT={{ ollama_port }}
+QDRANT_PORT={{ qdrant_port }}
+CRAWL4AI_PORT={{ crawl4ai_port }}
+POSTGRES_PASSWORD={{ postgres_password }}
+N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}
+DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}
+NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}
+EOF
+{% for key, value in custom_env.items() %}
+        printf "%s\n" "{{ key }}={{ value }}" >> "$RUNTIME_ENV_FILE"
+{% endfor %}
+    }
+
+    write_compose_file() {
+        cat > "$COMPOSE_FILE_PATH" <<'EOF'
+version: "3.8"
 
 services:
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
-    ports:
-      - "{{ n8n_port }}:5678"
+    env_file:
+      - ./runtime.env
     environment:
       - N8N_HOST=0.0.0.0
-      - N8N_PORT=5678
+      - N8N_PORT=${N8N_PORT:-5678}
       - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:{{ n8n_port }}/
-{% if tier == "automation" or tier == "gpu" %}
-      - N8N_METRICS=true
-{% endif %}
-{% for key, value in custom_env.items() %}
-{% if key.startswith('N8N_') %}
-      - {{ key }}={{ value }}
-{% endif %}
-{% endfor %}
+      - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
+      - N8N_METRICS=${N8N_METRICS:-false}
+    ports:
+      - "${N8N_PORT:-5678}:5678"
     volumes:
       - /mnt/efs/n8n:/home/node/.n8n
     healthcheck:
@@ -44,13 +68,13 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
-    ports:
-      - "{{ ollama_port }}:11434"
-{% if tier == "gpu" %}
-    runtime: nvidia
+    env_file:
+      - ./runtime.env
+    runtime: ${DOCKER_RUNTIME:-runc}
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-{% endif %}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
     healthcheck:
@@ -63,8 +87,10 @@ services:
     image: qdrant/qdrant:latest
     container_name: qdrant
     restart: unless-stopped
+    env_file:
+      - ./runtime.env
     ports:
-      - "{{ qdrant_port }}:6333"
+      - "${QDRANT_PORT:-6333}:6333"
       - "6334:6334"
     volumes:
       - /mnt/efs/qdrant:/qdrant/storage
@@ -78,8 +104,10 @@ services:
     image: unclecode/crawl4ai:latest
     container_name: crawl4ai
     restart: unless-stopped
+    env_file:
+      - ./runtime.env
     ports:
-      - "{{ crawl4ai_port }}:11235"
+      - "${CRAWL4AI_PORT:-11235}:11235"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
       interval: 30s
@@ -90,10 +118,12 @@ services:
     image: postgres:15
     container_name: postgres
     restart: unless-stopped
+    env_file:
+      - ./runtime.env
     environment:
       - POSTGRES_DB=geusemaker
       - POSTGRES_USER=geusemaker
-      - POSTGRES_PASSWORD={{ postgres_password }}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
     volumes:
       - /mnt/efs/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -102,24 +132,51 @@ services:
       timeout: 10s
       retries: 3
 EOF
+    }
+
+    load_prebaked_images() {
+        local images_dir="${GEUSEMAKER_RUNTIME_DIR:-/opt/geusemaker/runtime}/images"
+        if [ ! -d "$images_dir" ]; then
+            return
+        fi
+        shopt -s nullglob
+        for tarball in "$images_dir"/*.tar "$images_dir"/*.tar.gz; do
+            [ -e "$tarball" ] || continue
+            echo "Loading pre-baked Docker image $tarball"
+            docker load -i "$tarball" || true
+        done
+        shopt -u nullglob
+    }
+
+    write_runtime_env
+
+    if [ "$use_runtime_bundle" = "true" ]; then
+        if [ ! -f "$COMPOSE_FILE_PATH" ]; then
+            echo "ERROR: Runtime bundle compose not found at $COMPOSE_FILE_PATH"
+            exit 1
+        fi
+    else
+        write_compose_file
+    fi
+
+    load_prebaked_images
 
     echo "Pre-pulling Docker images to EFS-backed data directory..."
-    docker-compose -f /root/docker-compose.yml pull
+    run_compose pull
 
     echo "Starting Docker Compose services..."
-    cd /root
-    docker-compose up -d
+    run_compose up -d
 
     # Wait for services to start
     sleep 10
 
     # Verify containers are running
-    if ! docker-compose ps | grep -q "Up"; then
+    if ! run_compose ps | grep -q "Up"; then
         echo "WARNING: Some containers may not be running"
-        docker-compose ps
+        run_compose ps
     else
         echo "All services started successfully"
-        docker-compose ps
+        run_compose ps
     fi
 
     touch "$SERVICES_GUARD"

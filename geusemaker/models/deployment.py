@@ -65,6 +65,16 @@ class DeploymentConfig(BaseModel):
         description="When reusing a VPC, allow GeuseMaker to attach an internet gateway and create public routes.",
     )
 
+    # Provisioning optimizations
+    use_runtime_bundle: bool = Field(
+        default=False,
+        description="Embed the packaged runtime bundle into UserData to reduce on-instance downloads.",
+    )
+    runtime_bundle_path: str | None = Field(
+        default=None,
+        description="Optional path to a prebuilt runtime bundle tar.gz to embed instead of the packaged assets.",
+    )
+
     # Optional features
     enable_alb: bool = Field(default=False)
     enable_cdn: bool = Field(default=False)

@@ -21,3 +21,19 @@ class UserDataConfig(BaseModel):
     crawl4ai_port: int = Field(default=11235, description="Crawl4AI API port")
     postgres_password: str = Field(..., description="PostgreSQL database password")
     custom_env: dict[str, str] = Field(default_factory=dict, description="Custom environment variables")
+    use_runtime_bundle: bool = Field(
+        default=False,
+        description="When true, embed the packaged runtime bundle to reduce on-instance downloads.",
+    )
+    runtime_bundle_b64: str | None = Field(
+        default=None,
+        description="Base64-encoded runtime bundle tarball (populated automatically when use_runtime_bundle is true).",
+    )
+    runtime_bundle_path: str | None = Field(
+        default=None,
+        description="Optional path to a prebuilt runtime bundle tar.gz to embed instead of packaged assets.",
+    )
+    runtime_bundle_filename: str = Field(
+        default="runtime-bundle.tar.gz",
+        description="Filename used when unpacking the runtime bundle on the instance.",
+    )

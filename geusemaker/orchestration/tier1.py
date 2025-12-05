@@ -179,6 +179,8 @@ class Tier1Orchestrator:
             stack_name=config.stack_name,
             region=self.region,
             postgres_password=postgres_password,
+            use_runtime_bundle=config.use_runtime_bundle,
+            runtime_bundle_path=config.runtime_bundle_path,
         )
         userdata_script = self.userdata_generator.generate(userdata_config)
         userdata_payload = self._compress_userdata(userdata_script)

@@ -35,6 +35,11 @@ dev = [
 [project.scripts]
 geusemaker = "geusemaker.cli.main:cli"
 
+[tool.hatch.build]
+include = [
+  "geusemaker/runtime_assets/**/*",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

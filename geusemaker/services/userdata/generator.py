@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import io
+import tarfile
+from importlib import resources
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -43,8 +47,12 @@ class UserDataGenerator:
             services_tmpl = self._env.get_template("services.sh.j2")
             healthcheck_tmpl = self._env.get_template("healthcheck.sh.j2")
 
-            # Convert config to dict for template rendering
+            # Convert config to dict for template rendering and backfill runtime bundle when requested
             context = config.model_dump()
+            if context.get("use_runtime_bundle") and not context.get("runtime_bundle_b64"):
+                context["runtime_bundle_b64"] = self._build_runtime_bundle_b64(
+                    override_path=config.runtime_bundle_path,
+                )
 
             # Render each section
             sections = [
@@ -61,6 +69,36 @@ class UserDataGenerator:
 
         except Exception as e:
             raise RuntimeError(f"Failed to generate UserData script: {e}") from e
+
+    def _build_runtime_bundle_b64(self, override_path: str | None = None) -> str:
+        """Return base64-encoded runtime bundle bytes."""
+        bundle_bytes = self._load_runtime_bundle_bytes(override_path)
+        return base64.b64encode(bundle_bytes).decode()
+
+    def _load_runtime_bundle_bytes(self, override_path: str | None = None) -> bytes:
+        """Create a tar.gz of packaged runtime assets or load a provided bundle path."""
+        if override_path:
+            bundle_path = Path(override_path).expanduser()
+            if not bundle_path.exists():
+                raise RuntimeError(f"Runtime bundle override not found at {bundle_path}")
+            return bundle_path.read_bytes()
+
+        asset_root = resources.files("geusemaker.runtime_assets")
+        if not asset_root.exists():
+            raise RuntimeError("Runtime assets missing from package; rebuild or reinstall GeuseMaker.")
+
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for asset in asset_root.rglob("*"):
+                name = asset.name
+                if name in {"__pycache__", ".DS_Store"}:
+                    continue
+                rel_parts = asset.relative_to(asset_root).parts
+                if "dist" in rel_parts:
+                    continue
+                tar.add(str(asset), arcname=str(asset.relative_to(asset_root)))
+
+        return buffer.getvalue()
 
     @staticmethod
     def _trim_script(script: str) -> str:

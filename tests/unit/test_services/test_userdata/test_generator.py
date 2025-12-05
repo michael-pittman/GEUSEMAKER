@@ -75,7 +75,7 @@ def test_docker_compose_file_generated(base_config: UserDataConfig) -> None:
     script = gen.generate(base_config)
 
     assert "docker-compose.yml" in script
-    assert "version: '3.8'" in script
+    assert 'version: "3.8"' in script
     assert "services:" in script
 
 
@@ -122,8 +122,8 @@ def test_tier_dev_configuration(base_config: UserDataConfig) -> None:
     script = gen.generate(base_config)
 
     # Dev tier should NOT have NVIDIA runtime
-    assert "runtime: nvidia" not in script
-    assert "N8N_METRICS" not in script
+    assert "DOCKER_RUNTIME=nvidia" not in script
+    assert "N8N_METRICS=true" not in script
 
 
 def test_tier_automation_configuration() -> None:
@@ -158,7 +158,7 @@ def test_tier_gpu_nvidia_runtime() -> None:
 
     # GPU tier should configure NVIDIA runtime
     assert "nvidia-container-toolkit" in script
-    assert "runtime: nvidia" in script
+    assert "DOCKER_RUNTIME=nvidia" in script
     assert "NVIDIA_VISIBLE_DEVICES=all" in script
 
 
@@ -218,6 +218,8 @@ def test_custom_environment_variables() -> None:
     # N8N_ prefixed vars should be included
     assert "N8N_BASIC_AUTH_ACTIVE=true" in script
     assert "N8N_BASIC_AUTH_USER=admin" in script
+    # Non N8N vars should also be written to runtime env file
+    assert "CUSTOM_VAR=value" in script
 
 
 def test_custom_ports() -> None:
@@ -237,10 +239,10 @@ def test_custom_ports() -> None:
     gen = UserDataGenerator()
     script = gen.generate(config)
 
-    assert "8080:5678" in script  # n8n port mapping
-    assert "8081:11434" in script  # ollama port mapping
-    assert "8082:6333" in script  # qdrant port mapping
-    assert "8083:11235" in script  # crawl4ai port mapping
+    assert "N8N_PORT=8080" in script  # n8n port mapping set via env
+    assert "OLLAMA_PORT=8081" in script  # ollama port mapping
+    assert "QDRANT_PORT=8082" in script  # qdrant port mapping
+    assert "CRAWL4AI_PORT=8083" in script  # crawl4ai port mapping
 
 
 def test_health_checks_included(base_config: UserDataConfig) -> None:
@@ -280,7 +282,7 @@ def test_docker_compose_up_command(base_config: UserDataConfig) -> None:
     gen = UserDataGenerator()
     script = gen.generate(base_config)
 
-    assert "docker-compose up -d" in script
+    assert "run_compose up -d" in script
 
 
 def test_efs_runs_before_docker(base_config: UserDataConfig) -> None:
@@ -308,4 +310,15 @@ def test_services_pre_pull_images(base_config: UserDataConfig) -> None:
     gen = UserDataGenerator()
     script = gen.generate(base_config)
 
-    assert "docker-compose -f /root/docker-compose.yml pull" in script
+    assert "run_compose pull" in script
+
+
+def test_runtime_bundle_block_included_when_enabled(base_config: UserDataConfig) -> None:
+    """Runtime bundle base64 payload should be embedded when requested."""
+    config = base_config.model_copy(update={"use_runtime_bundle": True})
+    gen = UserDataGenerator()
+    script = gen.generate(config)
+
+    assert "runtime-bundle.tar.gz" in script
+    assert "base64 -d > \"$RUNTIME_BUNDLE_FILE\"" in script
+    assert "tar -xzf \"$RUNTIME_BUNDLE_FILE\"" in script

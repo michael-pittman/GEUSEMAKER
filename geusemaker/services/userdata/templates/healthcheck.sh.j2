@@ -4,6 +4,17 @@
 
 echo "Running post-startup health checks..."
 
+# Ensure run_compose helper exists (when services block was skipped)
+if ! declare -f run_compose >/dev/null 2>&1; then
+    run_compose() {
+        if command -v docker-compose >/dev/null 2>&1; then
+            docker-compose -f "$COMPOSE_FILE_PATH" "$@"
+        else
+            docker compose -f "$COMPOSE_FILE_PATH" "$@"
+        fi
+    }
+fi
+
 # Wait for services to fully initialize
 sleep 30
 
@@ -19,7 +30,7 @@ fi
 
 # Check container health
 echo "Container status:"
-docker-compose -f /root/docker-compose.yml ps
+run_compose ps
 
 # Check individual service health
 check_service() {

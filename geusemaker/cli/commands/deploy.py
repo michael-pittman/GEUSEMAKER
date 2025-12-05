@@ -124,6 +124,17 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
     help="When reusing a VPC, allow GeuseMaker to attach an Internet Gateway and public routes.",
 )
 @click.option(
+    "--use-runtime-bundle/--no-runtime-bundle",
+    default=False,
+    show_default=True,
+    help="Embed the packaged runtime bundle into UserData to reduce on-instance downloads.",
+)
+@click.option(
+    "--runtime-bundle-path",
+    default=None,
+    help="Optional path to a prebuilt runtime-bundle tar.gz to embed instead of the packaged assets.",
+)
+@click.option(
     "--subnet-id",
     default=None,
     help="Preferred subnet id when reusing a VPC (must belong to the VPC).",
@@ -188,6 +199,8 @@ def deploy(
     budget: float | None,
     vpc_id: str | None,
     attach_internet_gateway: bool,
+    use_runtime_bundle: bool,
+    runtime_bundle_path: str | None,
     subnet_id: str | None,
     storage_subnet_id: str | None,
     public_subnet_ids: tuple[str, ...],
@@ -225,6 +238,8 @@ def deploy(
         budget_limit=Decimal(str(budget)) if budget is not None else None,
         vpc_id=vpc_id,
         attach_internet_gateway=attach_internet_gateway,
+        use_runtime_bundle=use_runtime_bundle,
+        runtime_bundle_path=runtime_bundle_path,
         subnet_id=subnet_id,
         storage_subnet_id=storage_subnet_id,
         public_subnet_ids=list(public_subnet_ids) or None,
@@ -252,6 +267,8 @@ def deploy(
             "budget_limit": prefill.get("budget_limit"),
             "vpc_id": prefill.get("vpc_id", vpc_id),
             "attach_internet_gateway": prefill.get("attach_internet_gateway", attach_internet_gateway),
+            "use_runtime_bundle": prefill.get("use_runtime_bundle", use_runtime_bundle),
+            "runtime_bundle_path": prefill.get("runtime_bundle_path", runtime_bundle_path),
             "subnet_id": prefill.get("subnet_id", subnet_id),
             "storage_subnet_id": prefill.get("storage_subnet_id", storage_subnet_id),
             "public_subnet_ids": prefill.get("public_subnet_ids", list(public_subnet_ids) or None),

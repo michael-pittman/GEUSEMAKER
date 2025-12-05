@@ -37,6 +37,8 @@ ENV_VAR_MAP: dict[str, str] = {
     "security_group_id": "GEUSEMAKER_SECURITY_GROUP_ID",
     "keypair_name": "GEUSEMAKER_KEYPAIR_NAME",
     "attach_internet_gateway": "GEUSEMAKER_ATTACH_INTERNET_GATEWAY",
+    "use_runtime_bundle": "GEUSEMAKER_USE_RUNTIME_BUNDLE",
+    "runtime_bundle_path": "GEUSEMAKER_RUNTIME_BUNDLE_PATH",
     "enable_alb": "GEUSEMAKER_ENABLE_ALB",
     "enable_cdn": "GEUSEMAKER_ENABLE_CDN",
     "auto_rollback_on_failure": "GEUSEMAKER_AUTO_ROLLBACK",

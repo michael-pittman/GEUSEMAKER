@@ -10,6 +10,36 @@ if [ -f "$EFS_GUARD" ]; then
 else
     echo "Mounting EFS filesystem..."
 
+    install_efs_utils_from_bundle() {
+        local bundle_dir="${GEUSEMAKER_RUNTIME_DIR:-/opt/geusemaker/runtime}/efs-utils"
+        if [ ! -d "$bundle_dir" ]; then
+            return 1
+        fi
+
+        local deb_pkg rpm_pkg
+        deb_pkg=$(find "$bundle_dir" -maxdepth 1 -name "amazon-efs-utils*.deb" | head -n1 || true)
+        rpm_pkg=$(find "$bundle_dir" -maxdepth 1 -name "amazon-efs-utils*.rpm" | head -n1 || true)
+
+        if [ -n "$deb_pkg" ]; then
+            echo "Installing amazon-efs-utils from bundled .deb: $deb_pkg"
+            with_dpkg_lock_retry dpkg -i "$deb_pkg" || true
+            with_dpkg_lock_retry apt-get install -f -y || true
+            return 0
+        fi
+
+        if [ -n "$rpm_pkg" ]; then
+            echo "Installing amazon-efs-utils from bundled .rpm: $rpm_pkg"
+            if command -v yum >/dev/null 2>&1; then
+                yum localinstall -y "$rpm_pkg" || true
+            elif command -v rpm >/dev/null 2>&1; then
+                rpm -Uvh "$rpm_pkg" || true
+            fi
+            return 0
+        fi
+
+        return 1
+    }
+
     # Install EFS utils (supports Amazon Linux and Ubuntu)
     pkg_update_once
 
@@ -69,7 +99,9 @@ PY
         exit 1
     fi
 
-    if ! pkg_install amazon-efs-utils; then
+    if install_efs_utils_from_bundle; then
+        echo "amazon-efs-utils installed from bundled artifacts"
+    elif ! pkg_install amazon-efs-utils; then
         if [ "$OS_FAMILY" = "debian" ]; then
             echo "amazon-efs-utils not available via apt, attempting source build..."
             # Install all build dependencies in single transaction for performance
