@@ -1,0 +1,53 @@
+# ===================================
+# Post-Startup Health Verification
+# ===================================
+
+echo "Running post-startup health checks..."
+
+# Wait for services to fully initialize
+sleep 30
+
+# Check Docker daemon
+if ! docker info > /dev/null 2>&1; then
+    echo "WARNING: Docker daemon not responding"
+fi
+
+# Check EFS mount
+if ! mountpoint -q /mnt/efs; then
+    echo "WARNING: EFS not mounted"
+fi
+
+# Check container health
+echo "Container status:"
+docker-compose -f /root/docker-compose.yml ps
+
+# Check individual service health
+check_service() {
+    local service=$1
+    local port=$2
+    local path=${3:-/}
+
+    echo "Checking $service on port $port..."
+    if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
+        echo "✓ $service is healthy"
+    else
+        echo "✗ $service health check failed (may still be starting)"
+    fi
+}
+
+check_service "n8n" "{{ n8n_port }}" "/healthz"
+check_service "ollama" "{{ ollama_port }}" "/api/tags"
+check_service "qdrant" "{{ qdrant_port }}" "/healthz"
+check_service "crawl4ai" "{{ crawl4ai_port }}" "/health"
+
+# Mark initialization complete
+touch "$GUARD_FILE"
+rm -f "$ERROR_GUARD"
+
+echo "==================================="
+echo "GeuseMaker initialization complete!"
+echo "Stack: {{ stack_name }}"
+echo "All services should be accessible"
+echo "Check status: docker-compose -f /root/docker-compose.yml ps"
+echo "View logs: docker-compose -f /root/docker-compose.yml logs"
+echo "==================================="

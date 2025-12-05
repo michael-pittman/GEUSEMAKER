@@ -1,0 +1,7 @@
+region: us-east-1
+instance_type: t3.medium
+use_spot: true
+enable_alb: false
+enable_cdn: false
+auto_rollback_on_failure: true
+rollback_timeout_minutes: 15

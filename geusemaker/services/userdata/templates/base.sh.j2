@@ -1,0 +1,173 @@
+#!/bin/bash
+# GeuseMaker UserData Script - {{ stack_name }}
+# Generated for tier: {{ tier }}
+# Region: {{ region }}
+
+set -euo pipefail
+
+# Logging setup
+LOGFILE="/var/log/geusemaker-userdata.log"
+exec 1> >(tee -a "$LOGFILE")
+exec 2>&1
+
+echo "==================================="
+echo "GeuseMaker UserData Initialization"
+echo "Stack: {{ stack_name }}"
+echo "Tier: {{ tier }}"
+echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "==================================="
+
+# Guard file to prevent re-running on reboot
+GUARD_FILE="/var/lib/geusemaker/userdata-complete"
+ERROR_GUARD="/var/lib/geusemaker/userdata-error"
+if [ -f "$GUARD_FILE" ]; then
+    echo "UserData already executed, skipping (idempotency guard)"
+    exit 0
+fi
+
+# Create state directory
+mkdir -p /var/lib/geusemaker
+rm -f "$ERROR_GUARD"
+
+# Error handler
+handle_error() {
+    echo "ERROR: UserData script failed at line $1"
+    echo "Check $LOGFILE for details"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): failed at line $1" > "$ERROR_GUARD"
+    exit 1
+}
+
+trap 'handle_error $LINENO' ERR
+
+echo "Starting GeuseMaker initialization..."
+
+# OS detection and package helpers
+detect_os_family() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case "${ID,,}" in
+            amzn|amzn2|amzn2023)
+                echo "amazon"
+                return
+                ;;
+            ubuntu|debian)
+                echo "debian"
+                return
+                ;;
+        esac
+    fi
+    echo "unknown"
+}
+
+OS_FAMILY="$(detect_os_family)"
+if [ "$OS_FAMILY" = "unknown" ]; then
+    echo "ERROR: Unsupported OS. Only Amazon Linux and Ubuntu are supported."
+    exit 1
+fi
+
+echo "Detected OS family: $OS_FAMILY"
+
+# Debian/Ubuntu: set noninteractive frontend and add dpkg/apt lock retry helper
+if [ "$OS_FAMILY" = "debian" ]; then
+    export DEBIAN_FRONTEND=noninteractive
+fi
+
+with_dpkg_lock_retry() {
+    if [ "$OS_FAMILY" != "debian" ]; then
+        "$@"
+        return $?
+    fi
+
+    local attempt=1
+    local max_attempts=30
+    local sleep_seconds=10
+    local output
+    while true; do
+        if output=$("$@" 2>&1); then
+            printf "%s\n" "$output"
+            return 0
+        fi
+        local status=$?
+        printf "%s\n" "$output"
+        if echo "$output" | grep -Eq "Could not get lock /var/lib/(dpkg/lock(-frontend)?|apt/lists/lock)|Unable to acquire the dpkg frontend lock"; then
+            if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: dpkg/apt lock held after $max_attempts attempts; aborting."
+                return "$status"
+            fi
+            echo "dpkg/apt lock held by another process, retrying in ${sleep_seconds}s (attempt ${attempt}/${max_attempts})..."
+            sleep "$sleep_seconds"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        return "$status"
+    done
+}
+
+# ===================================
+# Performance Optimization: Parallel Downloads
+# ===================================
+if [ "$OS_FAMILY" = "debian" ]; then
+    # Enable parallel apt downloads (3 concurrent connections per package)
+    echo 'Acquire::Queue-Mode "host";' > /etc/apt/apt.conf.d/99parallel
+    echo 'Acquire::http::Pipeline-Depth "5";' >> /etc/apt/apt.conf.d/99parallel
+    echo 'APT::Acquire::Max-FutureTime "86400";' >> /etc/apt/apt.conf.d/99parallel
+else
+    # Enable parallel yum downloads
+    if ! grep -q "^max_parallel_downloads" /etc/yum.conf 2>/dev/null; then
+        echo "max_parallel_downloads=10" >> /etc/yum.conf
+    fi
+fi
+
+PKG_UPDATE_GUARD="/var/lib/geusemaker/packages-updated"
+
+pkg_update() {
+    if [ "$OS_FAMILY" = "debian" ]; then
+        with_dpkg_lock_retry apt-get update -y
+    else
+        yum update -y
+    fi
+}
+
+pkg_update_once() {
+    if [ -f "$PKG_UPDATE_GUARD" ]; then
+        return
+    fi
+    pkg_update
+    touch "$PKG_UPDATE_GUARD"
+}
+
+pkg_install() {
+    if [ "$OS_FAMILY" = "debian" ]; then
+        with_dpkg_lock_retry apt-get install -y "$@"
+    else
+        yum install -y "$@"
+    fi
+}
+
+get_primary_user() {
+    if id -u ec2-user >/dev/null 2>&1; then
+        echo "ec2-user"
+    elif id -u ubuntu >/dev/null 2>&1; then
+        echo "ubuntu"
+    else
+        # Fallback to first non-root user with UID >= 1000
+        awk -F: '$3 >= 1000 {print $1; exit}' /etc/passwd
+    fi
+}
+
+# ===================================
+# Core System Dependencies
+# ===================================
+echo "Installing core system dependencies..."
+pkg_update_once
+
+# Batch install all core dependencies for performance (single apt/yum transaction)
+if [ "$OS_FAMILY" = "debian" ]; then
+    # Debian/Ubuntu: Install all dependencies in one transaction
+    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 libfuse2 fuse
+else
+    # Amazon Linux: Install all dependencies in one transaction
+    pkg_install curl nfs-utils || true
+fi
+
+echo "Core dependencies installed successfully"

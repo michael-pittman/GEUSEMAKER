@@ -1,0 +1,126 @@
+# ===================================
+# Docker Compose Service Setup
+# ===================================
+
+SERVICES_GUARD="/var/lib/geusemaker/services-started"
+if [ -f "$SERVICES_GUARD" ]; then
+    echo "Services already started, skipping"
+else
+    echo "Configuring Docker Compose services..."
+
+    # Create Docker Compose file
+    cat > /root/docker-compose.yml <<'EOF'
+version: '3.8'
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "{{ n8n_port }}:5678"
+    environment:
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:{{ n8n_port }}/
+{% if tier == "automation" or tier == "gpu" %}
+      - N8N_METRICS=true
+{% endif %}
+{% for key, value in custom_env.items() %}
+{% if key.startswith('N8N_') %}
+      - {{ key }}={{ value }}
+{% endif %}
+{% endfor %}
+    volumes:
+      - /mnt/efs/n8n:/home/node/.n8n
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "{{ ollama_port }}:11434"
+{% if tier == "gpu" %}
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+{% endif %}
+    volumes:
+      - /mnt/efs/ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "{{ qdrant_port }}:6333"
+      - "6334:6334"
+    volumes:
+      - /mnt/efs/qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: crawl4ai
+    restart: unless-stopped
+    ports:
+      - "{{ crawl4ai_port }}:11235"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=geusemaker
+      - POSTGRES_USER=geusemaker
+      - POSTGRES_PASSWORD={{ postgres_password }}
+    volumes:
+      - /mnt/efs/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geusemaker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+EOF
+
+    echo "Pre-pulling Docker images to EFS-backed data directory..."
+    docker-compose -f /root/docker-compose.yml pull
+
+    echo "Starting Docker Compose services..."
+    cd /root
+    docker-compose up -d
+
+    # Wait for services to start
+    sleep 10
+
+    # Verify containers are running
+    if ! docker-compose ps | grep -q "Up"; then
+        echo "WARNING: Some containers may not be running"
+        docker-compose ps
+    else
+        echo "All services started successfully"
+        docker-compose ps
+    fi
+
+    touch "$SERVICES_GUARD"
+fi

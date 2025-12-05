@@ -1,0 +1,124 @@
+# ===================================
+# EFS Mount Configuration
+# ===================================
+
+echo "EFS Mount Configuration"
+
+EFS_GUARD="/var/lib/geusemaker/efs-mounted"
+if [ -f "$EFS_GUARD" ]; then
+    echo "EFS already mounted, skipping"
+else
+    echo "Mounting EFS filesystem..."
+
+    # Install EFS utils (supports Amazon Linux and Ubuntu)
+    pkg_update_once
+
+    # Ensure pip/botocore are present so efs-utils DNS/IP fallback can work
+    if ! command -v pip3 >/dev/null 2>&1; then
+        pkg_install python3-pip || true
+    fi
+    if ! python3 -m pip show botocore >/dev/null 2>&1; then
+        python3 -m pip install --no-cache-dir -q botocore || true
+    fi
+
+    # Fail fast if no mount target exists in the instance AZ
+    INSTANCE_AZ="$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone || true)"
+    if [ -z "$INSTANCE_AZ" ]; then
+        echo "ERROR: Could not determine instance availability zone; aborting EFS mount."
+        exit 1
+    fi
+    python3 - <<'PY'
+import os
+import sys
+
+try:
+    import botocore.session
+    from botocore.exceptions import BotoCoreError, ClientError
+except Exception as exc:  # noqa: BLE001
+    print(f"WARNING: botocore unavailable for mount target validation: {exc}")
+    sys.exit(0)
+
+fs_id = "{{ efs_id }}"
+region = "{{ region }}"
+az = os.environ.get("INSTANCE_AZ")
+
+session = botocore.session.get_session()
+client = session.create_client("efs", region_name=region)
+
+try:
+    targets = client.describe_mount_targets(FileSystemId=fs_id).get("MountTargets", [])
+except (ClientError, BotoCoreError) as exc:
+    print(f"WARNING: Could not validate EFS mount targets: {exc}")
+    sys.exit(0)
+
+if not targets:
+    print(f"ERROR: No EFS mount targets found for {fs_id}; create a mount target in AZ {az} before retrying.")
+    sys.exit(2)
+
+if not any(t.get("AvailabilityZoneName") == az or t.get("AvailabilityZoneId") == az for t in targets):
+    print(f"ERROR: No EFS mount target found in availability zone {az} for {fs_id}. Choose a subnet in an AZ with a mount target or create one.")
+    sys.exit(2)
+
+sys.exit(0)
+PY
+    validation_status=$?
+    if [ "$validation_status" -eq 2 ]; then
+        exit 1
+    fi
+
+    if ! pkg_install amazon-efs-utils; then
+        if [ "$OS_FAMILY" = "debian" ]; then
+            echo "amazon-efs-utils not available via apt, attempting source build..."
+            # Install all build dependencies in single transaction for performance
+            # (runtime deps like stunnel4 and nfs-common already installed in base.sh.j2)
+            pkg_install git binutils build-essential pkg-config libssl-dev rustc cargo golang-go cmake
+            TMP_EFS_DIR=$(mktemp -d)
+            # Clone and build in background-safe mode
+            git clone --depth 1 https://github.com/aws/efs-utils "$TMP_EFS_DIR"
+            cd "$TMP_EFS_DIR"
+            ./build-deb.sh
+            # Install the built package (may have dependency issues)
+            with_dpkg_lock_retry dpkg -i ./build/amazon-efs-utils*deb || true
+            # Fix any remaining dependency issues automatically
+            with_dpkg_lock_retry apt-get install -f -y
+            cd /
+            rm -rf "$TMP_EFS_DIR"
+        else
+            echo "ERROR: Failed to install amazon-efs-utils"
+            exit 1
+        fi
+    fi
+
+    # Create mount point
+    mkdir -p /mnt/efs
+
+    # Mount EFS with TLS encryption
+    mount -t efs -o tls {{ efs_id }}:/ /mnt/efs
+
+    # Verify mount
+    if ! mountpoint -q /mnt/efs; then
+        echo "ERROR: EFS mount failed"
+        exit 1
+    fi
+
+    # Add to fstab for persistence
+    if ! grep -q "{{ efs_id }}" /etc/fstab; then
+        echo "{{ efs_id }}:/ /mnt/efs efs _netdev,tls,iam 0 0" >> /etc/fstab
+    fi
+
+    # Create service data directories
+    mkdir -p /mnt/efs/n8n
+    mkdir -p /mnt/efs/ollama
+    mkdir -p /mnt/efs/qdrant
+    mkdir -p /mnt/efs/postgres
+    mkdir -p /mnt/efs/docker
+
+    # Set permissions
+    chmod -R 755 /mnt/efs
+
+    echo "EFS mounted successfully at /mnt/efs"
+    echo "EFS ID: {{ efs_id }}"
+    echo "EFS DNS: {{ efs_dns }}"
+
+    touch "$EFS_GUARD"
+fi
