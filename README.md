@@ -262,6 +262,14 @@ geusemaker destroy my-ai-stack
 # - IAM role and instance profile
 # - VPC, subnet, security group (if created by GeuseMaker)
 # - State file from ~/.geusemaker/
+
+# Preserve EFS data (delete compute/network, keep persistent storage)
+geusemaker destroy my-ai-stack --preserve-efs
+
+# Use case: Stop expensive compute while retaining workflows/models/data
+# - Deletes: EC2 instance, IAM role, VPC/subnet/SG (if created)
+# - Preserves: EFS filesystem with all data (n8n workflows, Ollama models, Qdrant indexes)
+# - Benefit: Recreate deployment later from existing data without re-downloading models
 ```
 
 ## Advanced Usage
