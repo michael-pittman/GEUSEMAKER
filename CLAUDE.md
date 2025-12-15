@@ -726,6 +726,16 @@ location / {
 - Qdrant Web UI: `localhost:6333` (built-in dashboard, proxied via `/qdrant-ui/` → `/dashboard/`)
 - Crawl4AI: `localhost:11235` (proxied via `/crawl4ai/`)
 
+**n8n Configuration:**
+- **PostgreSQL**: Automatically configured to use `postgres` container (no manual setup needed)
+- **Database**: `geusemaker` (user: `geusemaker`, password from deployment config)
+- **Encryption Key**: Auto-generated `N8N_ENCRYPTION_KEY` (32 random bytes) for credential encryption
+- **Ollama Connection**: Use `http://ollama:11434` (container name, NOT localhost) in n8n credentials
+- **Qdrant Connection**: Use `http://qdrant:6333` (container name) if needed
+- **Crawl4AI Connection**: Use `http://crawl4ai:11235` (container name) if needed
+
+**⚠️ Critical**: When configuring Ollama in n8n, use `http://ollama:11434` (Docker container name), NOT `http://localhost:11434`. Containers communicate via Docker's internal DNS, not localhost.
+
 **NGINX installation timing:**
 - NGINX installed **AFTER** Docker services start
 - Ensures containers are listening before NGINX starts proxying

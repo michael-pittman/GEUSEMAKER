@@ -1,0 +1,113 @@
+{
+  "name": "Pull Ollama Model (Manual)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Click 'Test workflow' to execute. Edit the model name in the Set node below."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "model_name",
+              "name": "model_name",
+              "value": "nomic-embed-text",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-model-name",
+      "name": "Set Model Name",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300],
+      "notes": "Change the model_name value to pull different models (e.g., znbang/bge:small-en-v1.5, all-minilm)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/pull",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $json.model_name }}\",\n  \"stream\": false\n}",
+        "options": {
+          "timeout": 3600000
+        }
+      },
+      "id": "pull-model",
+      "name": "Pull Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 300],
+      "notes": "Pulls model from Ollama. Set timeout high for large models."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://ollama:11434/api/tags",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "list-models",
+      "name": "List All Models",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 300],
+      "notes": "Lists all installed models to verify the pull was successful"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Model Name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Model Name": {
+      "main": [
+        [
+          {
+            "node": "Pull Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Model": {
+      "main": [
+        [
+          {
+            "node": "List All Models",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,211 @@
+{
+  "name": "Web Scrape → Qdrant → Semantic Search",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Scrape Website and Store in Qdrant",
+        "formDescription": "Enter a URL to scrape. The content will be chunked, embedded, and stored in Qdrant for semantic search.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Website URL",
+              "fieldType": "text",
+              "placeholder": "https://example.com",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "respondWithOptions": {
+            "values": {
+              "respondWith": "text",
+              "formSubmittedText": "Website scraped and stored successfully! You can now search it using the semantic search workflow."
+            }
+          }
+        }
+      },
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [240, 400],
+      "notes": "User-friendly form interface. Users can enter URLs directly in the n8n form interface."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "url",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-url",
+      "name": "Set URL",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400],
+      "notes": "Extracts URL from form submission"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://crawl4ai:11235/crawl",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"url\": \"{{ $json.url }}\",\n  \"bypass_cache\": true,\n  \"extract_markdown\": true,\n  \"extract_links\": true,\n  \"wait_for\": \"networkidle\",\n  \"screenshot\": false\n}",
+        "options": {}
+      },
+      "id": "crawl4ai",
+      "name": "Crawl4AI - Scrape Website",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 400],
+      "notes": "Scrapes the website and extracts markdown content"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split content into chunks\nconst content = $input.item.json.markdown || '';\nconst url = $input.item.json.url || $('Set URL').item.json.url || '';\nconst chunkSize = 1000;\nconst chunks = [];\n\nfor (let i = 0; i < content.length; i += chunkSize) {\n  chunks.push({\n    text: content.slice(i, i + chunkSize),\n    url: url,\n    chunk_index: Math.floor(i / chunkSize)\n  });\n}\n\nreturn chunks.map(chunk => ({ json: chunk }));"
+      },
+      "id": "chunk-content",
+      "name": "Chunk Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400],
+      "notes": "Splits large content into smaller chunks (1000 chars each) for better embedding quality"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embed",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"nomic-embed-text\",\n  \"input\": \"{{ $json.text }}\"\n}",
+        "options": {}
+      },
+      "id": "generate-embeddings",
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1120, 400],
+      "notes": "Generate vector embeddings using Ollama embedding model"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Extract embedding vector from response\nconst embedding = $input.item.json.embeddings[0] || $input.item.json.embedding || [];\nconst text = $('Chunk Content').item.json.text;\nconst url = $('Chunk Content').item.json.url;\nconst chunk_index = $('Chunk Content').item.json.chunk_index;\n\nreturn {\n  json: {\n    id: `${chunk_index}_${Date.now()}`,\n    vector: embedding,\n    payload: {\n      text: text,\n      url: url,\n      chunk_index: chunk_index,\n      timestamp: new Date().toISOString()\n    }\n  }\n};"
+      },
+      "id": "prepare-qdrant-point",
+      "name": "Prepare Qdrant Point",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 400],
+      "notes": "Prepares data structure for Qdrant storage"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/web-scrapes/points",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"points\": [{\n    \"id\": \"{{ $json.id }}\",\n    \"vector\": {{ JSON.stringify($json.vector) }},\n    \"payload\": {{ JSON.stringify($json.payload) }}\n  }]\n}",
+        "options": {}
+      },
+      "id": "store-in-qdrant",
+      "name": "Store in Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1560, 400],
+      "notes": "Store embeddings in Qdrant vector database for semantic search"
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set URL": {
+      "main": [
+        [
+          {
+            "node": "Crawl4AI - Scrape Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl4AI - Scrape Website": {
+      "main": [
+        [
+          {
+            "node": "Chunk Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Content": {
+      "main": [
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Prepare Qdrant Point",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Point": {
+      "main": [
+        [
+          {
+            "node": "Store in Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

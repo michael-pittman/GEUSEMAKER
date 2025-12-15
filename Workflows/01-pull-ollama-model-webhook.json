@@ -1,0 +1,182 @@
+{
+  "name": "Pull Ollama Model (Webhook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "pull-model",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-pull-model",
+      "name": "Webhook - Pull Model",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "webhookId": "pull-ollama-model",
+      "notes": "API endpoint: POST /webhook/pull-model with body: {\"model_name\": \"model-name\"}"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.body.model_name }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/pull",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $json.body.model_name }}\",\n  \"stream\": false\n}",
+        "options": {
+          "timeout": 3600000
+        }
+      },
+      "id": "pull-model",
+      "name": "Pull Model from Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 200],
+      "notes": "Pulls the specified model from Ollama registry. Large models may take several minutes."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://ollama:11434/api/tags",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "list-models",
+      "name": "Verify Model Installed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 200],
+      "notes": "Lists all installed models to verify the pull was successful"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"model_name\": \"{{ $('Pull Model from Ollama').item.json.name || $json.body.model_name }}\",\n  \"message\": \"Model pulled successfully\",\n  \"installed_models\": {{ $json.models.map(m => m.name).join(', ') }}\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"Model name is required. Send POST request with body: {\\\"model_name\\\": \\\"model-name\\\"}\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"{{ $json.error || 'Failed to pull model' }}\",\n  \"model_name\": \"{{ $('Pull Model from Ollama').item.json.body.name || $json.body.model_name }}\"\n}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "pull-error-response",
+      "name": "Pull Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [900, 400]
+    }
+  ],
+  "connections": {
+    "Webhook - Pull Model": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Pull Model from Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Model from Ollama": {
+      "main": [
+        [
+          {
+            "node": "Verify Model Installed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Model Installed": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

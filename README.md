@@ -55,6 +55,8 @@ geusemaker deploy
 - **Network**: VPC, subnet, security group, internet gateway
 - **IAM**: Instance profile for EFS mount authentication
 - **Services**: n8n (5678), Ollama (11434), Qdrant (6333), Crawl4AI (11235), PostgreSQL (5432)
+- **Database**: PostgreSQL configured for n8n (auto-configured, no manual setup needed)
+- **Security**: Auto-generated encryption key for n8n credential storage
 
 ## Deployment Modes
 
@@ -232,6 +234,65 @@ curl http://<public-ip>:11434/api/chat -d '{
 # List preloaded models
 curl http://<public-ip>:11434/api/tags
 ```
+
+### Configure n8n Credentials
+
+After deployment, you'll need to configure n8n credentials for the AI stack services:
+
+#### 1. **Ollama Connection** (Required for AI workflows)
+
+In n8n, create a new **Ollama** credential:
+
+- **Base URL**: `http://ollama:11434`
+  - ⚠️ **Important**: Use `ollama` (container name), NOT `localhost`
+  - n8n runs in Docker and must use Docker network hostnames
+- **API Key**: (leave empty - no authentication required)
+
+**Why `ollama:11434`?**
+- Both n8n and Ollama run in Docker containers on the same network
+- Docker Compose automatically creates DNS resolution between containers
+- `localhost` inside the n8n container refers to itself, not other containers
+
+#### 2. **PostgreSQL Database** (Auto-configured)
+
+n8n is automatically configured to use PostgreSQL:
+- **Host**: `postgres` (container name)
+- **Port**: `5432`
+- **Database**: `geusemaker`
+- **User**: `geusemaker`
+- **Password**: Set during deployment (from `postgres_password` config)
+
+**No manual configuration needed** - this is handled automatically by GeuseMaker.
+
+#### 3. **Qdrant Connection** (Optional, for vector workflows)
+
+If you need to connect n8n to Qdrant:
+
+- **Base URL**: `http://qdrant:6333`
+- **API Key**: (leave empty - no authentication required)
+
+#### 4. **Crawl4AI Connection** (Optional, for web scraping workflows)
+
+If you need to connect n8n to Crawl4AI:
+
+- **Base URL**: `http://crawl4ai:11235`
+- **API Key**: (leave empty - no authentication required)
+
+#### Credential Encryption
+
+n8n automatically generates an encryption key (`N8N_ENCRYPTION_KEY`) during deployment to securely store credentials. This key is:
+- Generated automatically (32 random bytes)
+- Stored in `/mnt/efs/runtime.env` on the EC2 instance
+- Used to encrypt all credentials stored in n8n workflows
+- **Critical**: If you lose this key, you cannot decrypt existing credentials
+
+**To view the encryption key** (if needed for backup):
+```bash
+ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
+cat /mnt/efs/runtime.env | grep N8N_ENCRYPTION_KEY
+```
+
+**⚠️ Security Note**: Keep the encryption key secure. If you need to migrate n8n data, you must preserve this key.
 
 ### Cost Tracking
 

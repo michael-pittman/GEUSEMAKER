@@ -1,0 +1,136 @@
+{
+  "name": "Batch Pull Ollama Models",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Click 'Test workflow' to execute. Edit the models list in the Set node below."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "models",
+              "name": "models",
+              "value": "nomic-embed-text,znbang/bge:small-en-v1.5,all-minilm",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-models-list",
+      "name": "Set Models List",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300],
+      "notes": "Comma-separated list of model names to pull. Edit this to customize which models to install."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Split comma-separated model names into array\nconst models = $input.item.json.models.split(',').map(m => m.trim());\nreturn models.map(model => ({ json: { model_name: model } }));"
+      },
+      "id": "split-models",
+      "name": "Split Models",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "notes": "Splits the comma-separated list into individual model names"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/pull",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{ $json.model_name }}\",\n  \"stream\": false\n}",
+        "options": {
+          "timeout": 3600000
+        }
+      },
+      "id": "pull-model",
+      "name": "Pull Each Model",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 300],
+      "notes": "Pulls each model sequentially. Large models may take several minutes each."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://ollama:11434/api/tags",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "list-final-models",
+      "name": "List Final Models",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1120, 300],
+      "notes": "Lists all installed models after batch pull completes"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Models List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Models List": {
+      "main": [
+        [
+          {
+            "node": "Split Models",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Models": {
+      "main": [
+        [
+          {
+            "node": "Pull Each Model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Each Model": {
+      "main": [
+        [
+          {
+            "node": "List Final Models",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

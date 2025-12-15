@@ -1,0 +1,222 @@
+{
+  "name": "Semantic Search RAG Query",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "mode": "hostedChat",
+        "options": {
+          "title": "Semantic Search Assistant",
+          "subtitle": "Ask questions about scraped content. I'll search Qdrant and provide answers based on the stored information.",
+          "inputPlaceholder": "Type your question...",
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "chat-trigger",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [240, 400],
+      "notes": "Conversational interface for semantic search. Users can chat naturally to query the knowledge base."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "query",
+              "name": "query",
+              "value": "={{ $json.chatInput }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-query",
+      "name": "Extract Query",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400],
+      "notes": "Extracts the user's question from the chat input"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embed",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"nomic-embed-text\",\n  \"input\": \"{{ $json.query }}\"\n}",
+        "options": {}
+      },
+      "id": "embed-query",
+      "name": "Embed User Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 400],
+      "notes": "Generate embedding for the user's search query"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Extract embedding vector\nconst embedding = $input.item.json.embeddings[0] || $input.item.json.embedding || [];\nconst query = $('Extract Query').item.json.query;\n\nreturn {\n  json: {\n    query: query,\n    query_embedding: embedding\n  }\n};"
+      },
+      "id": "extract-embedding",
+      "name": "Extract Query Embedding",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400],
+      "notes": "Extracts the embedding vector from Ollama response"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/web-scrapes/points/search",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($json.query_embedding) }},\n  \"limit\": 5,\n  \"with_payload\": true,\n  \"score_threshold\": 0.7\n}",
+        "options": {}
+      },
+      "id": "search-qdrant",
+      "name": "Search Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1120, 400],
+      "notes": "Search Qdrant for similar vectors (top 5 results with score > 0.7)"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Prepare context from search results\nconst results = $input.item.json.result || [];\nconst query = $('Extract Query Embedding').item.json.query;\n\nif (results.length === 0) {\n  return {\n    json: {\n      query: query,\n      context: \"No relevant content found in the knowledge base.\",\n      results_count: 0\n    }\n  };\n}\n\nconst context = results.map(r => r.payload.text).join('\\n\\n');\n\nreturn {\n  json: {\n    query: query,\n    context: context,\n    results_count: results.length\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare RAG Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 400],
+      "notes": "Combines search results into context for RAG"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/chat",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen2.5:1.5b-instruct\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a helpful assistant that answers questions based on the provided context. Use only the information from the context to answer. If the context doesn't contain relevant information, say so.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Context:\\n{{ $json.context }}\\n\\nQuestion: {{ $json.query }}\"\n    }\n  ],\n  \"stream\": false\n}",
+        "options": {}
+      },
+      "id": "generate-answer",
+      "name": "Generate RAG Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1560, 400],
+      "notes": "Generate answer using RAG with Ollama LLM"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Format response for chat\nconst answer = $input.item.json.message?.content || 'No answer generated';\nconst query = $('Prepare RAG Context').item.json.query;\nconst resultsCount = $('Prepare RAG Context').item.json.results_count;\n\nreturn {\n  json: {\n    chatInput: query,\n    chatOutput: answer + (resultsCount > 0 ? `\\n\\n[Found ${resultsCount} relevant source(s)]` : '')\n  }\n};"
+      },
+      "id": "format-response",
+      "name": "Format Chat Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 400],
+      "notes": "Formats the response for the chat interface"
+    }
+  ],
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Query": {
+      "main": [
+        [
+          {
+            "node": "Embed User Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed User Query": {
+      "main": [
+        [
+          {
+            "node": "Extract Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Prepare RAG Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare RAG Context": {
+      "main": [
+        [
+          {
+            "node": "Generate RAG Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate RAG Answer": {
+      "main": [
+        [
+          {
+            "node": "Format Chat Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

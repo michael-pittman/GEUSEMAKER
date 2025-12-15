@@ -35,10 +35,22 @@ services:
       - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
       - N8N_METRICS=${N8N_METRICS:-false}
       - N8N_SECURE_COOKIE=true
+      # PostgreSQL database configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=geusemaker
+      - DB_POSTGRESDB_USER=geusemaker
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      - DB_POSTGRESDB_SCHEMA=public
+      # Encryption key for secure credential storage (auto-generated if not set)
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
     ports:
       - "${N8N_PORT:-5678}:5678"
     volumes:
       - /mnt/efs/n8n:/home/node/.n8n
+    depends_on:
+      - postgres
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/healthz"]
       interval: 30s

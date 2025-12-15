@@ -28,16 +28,31 @@ else
         local env_dir
         env_dir="$(dirname "$RUNTIME_ENV_FILE")"
         mkdir -p "$env_dir"
-        cat > "$RUNTIME_ENV_FILE" <<'EOF'
-N8N_PORT={{ n8n_port }}
-OLLAMA_PORT={{ ollama_port }}
-QDRANT_PORT={{ qdrant_port }}
-CRAWL4AI_PORT={{ crawl4ai_port }}
-POSTGRES_PASSWORD={{ postgres_password }}
-N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}
-DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}
-NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}
-EOF
+        
+        # Generate N8N_ENCRYPTION_KEY if not provided (32 random bytes = 64 hex chars)
+        # This is critical for encrypting credentials stored in n8n workflows
+        local n8n_encryption_key=""
+        if command -v openssl >/dev/null 2>&1; then
+            n8n_encryption_key=$(openssl rand -hex 32)
+        elif [ -c /dev/urandom ]; then
+            n8n_encryption_key=$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 64)
+        else
+            echo "WARNING: Cannot generate N8N_ENCRYPTION_KEY automatically. n8n credentials will not be encrypted."
+            n8n_encryption_key=""
+        fi
+        
+        # Write runtime.env file with all environment variables
+        {
+            echo "N8N_PORT={{ n8n_port }}"
+            echo "OLLAMA_PORT={{ ollama_port }}"
+            echo "QDRANT_PORT={{ qdrant_port }}"
+            echo "CRAWL4AI_PORT={{ crawl4ai_port }}"
+            echo "POSTGRES_PASSWORD={{ postgres_password }}"
+            echo "N8N_ENCRYPTION_KEY=${n8n_encryption_key}"
+            echo "N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}"
+            echo "DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}"
+            echo "NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}"
+        } > "$RUNTIME_ENV_FILE"
 {% for key, value in custom_env.items() %}
         printf "%s\n" "{{ key }}={{ value }}" >> "$RUNTIME_ENV_FILE"
 {% endfor %}
@@ -88,10 +103,22 @@ services:
       - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
       - N8N_METRICS=${N8N_METRICS:-false}
       - N8N_SECURE_COOKIE=true
+      # PostgreSQL database configuration
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=geusemaker
+      - DB_POSTGRESDB_USER=geusemaker
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      - DB_POSTGRESDB_SCHEMA=public
+      # Encryption key for secure credential storage (auto-generated if not set)
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
     ports:
       - "${N8N_PORT:-5678}:5678"
     volumes:
       - /mnt/efs/n8n:/home/node/.n8n
+    depends_on:
+      - postgres
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/healthz"]
       interval: 30s
