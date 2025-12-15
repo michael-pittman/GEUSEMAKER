@@ -6,7 +6,6 @@ import asyncio
 import gzip
 import json
 import logging
-from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -83,6 +82,11 @@ class StateManager:
         """Persist deployment state atomically with a pre-write backup."""
         file_path = self.deployment_path(state.stack_name)
         await asyncio.to_thread(self._write_state, file_path, state)
+
+    def save_deployment_sync(self, state: DeploymentState) -> None:
+        """Persist deployment state synchronously (for non-async callers)."""
+        file_path = self.deployment_path(state.stack_name)
+        self._write_state(file_path, state)
 
     def _write_state(self, file_path: Path, state: DeploymentState) -> None:
         state.updated_at = datetime.now(UTC)

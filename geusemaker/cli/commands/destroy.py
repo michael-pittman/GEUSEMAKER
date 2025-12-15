@@ -21,13 +21,14 @@ from geusemaker.services.destruction import DestructionService
 @click.argument("stack_name")
 @click.option("--force", is_flag=True, help="Skip confirmation prompt.")
 @click.option("--dry-run", is_flag=True, help="Preview deletion without making changes.")
+@click.option("--preserve-efs", is_flag=True, help="Preserve EFS filesystem (keep data, delete other resources).")
 @click.option(
     "--state-dir",
     type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
     help="Optional state directory (default ~/.geusemaker).",
 )
 @output_option()
-def destroy(stack_name: str, force: bool, dry_run: bool, state_dir: str | None, output: str) -> None:
+def destroy(stack_name: str, force: bool, dry_run: bool, preserve_efs: bool, state_dir: str | None, output: str) -> None:
     """Destroy an existing deployment."""
     output_format = OutputFormat(output.lower())
     manager = StateManager(base_path=Path(state_dir) if state_dir else None)
@@ -48,11 +49,13 @@ def destroy(stack_name: str, force: bool, dry_run: bool, state_dir: str | None, 
         raise click.UsageError("--force is required when using non-text output modes to avoid interactive prompts.")
 
     if not force:
-        console.print(
+        warning_msg = (
             f"{EMOJI['warn']} This will delete resources for [bold]{stack_name}[/bold]. "
-            "Reused resources will be preserved.",
-            verbosity="warning",
+            "Reused resources will be preserved."
         )
+        if preserve_efs:
+            warning_msg += " EFS filesystem will be preserved."
+        console.print(warning_msg, verbosity="warning")
         confirmation = click.prompt("Type the deployment name to confirm", default="", show_default=False)
         if confirmation != stack_name:
             console.print(f"{EMOJI['warning']} Confirmation did not match. Destruction cancelled.", verbosity="warning")
@@ -75,14 +78,14 @@ def destroy(stack_name: str, force: bool, dry_run: bool, state_dir: str | None, 
                 progress.update(task, description=msg)
 
             try:
-                result = service.destroy(state, dry_run=dry_run, progress_callback=update_progress)
+                result = service.destroy(state, dry_run=dry_run, preserve_efs=preserve_efs, progress_callback=update_progress)
             except Exception as exc:  # noqa: BLE001
                 console.print(f"{EMOJI['error']} Destroy failed: {exc}", verbosity="error")
                 raise SystemExit(1)
     else:
         # No progress display for non-TEXT output or silent mode
         try:
-            result = service.destroy(state, dry_run=dry_run)
+            result = service.destroy(state, dry_run=dry_run, preserve_efs=preserve_efs)
         except Exception as exc:  # noqa: BLE001
             payload = build_response(
                 status="error",

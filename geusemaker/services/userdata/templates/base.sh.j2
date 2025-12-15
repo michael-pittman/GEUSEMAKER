@@ -175,6 +175,93 @@ get_primary_user() {
 }
 
 # ===================================
+# curl and Metadata Service Helpers
+# ===================================
+
+verify_curl() {
+    # Verify curl is installed and functional
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "ERROR: curl is not installed or not in PATH"
+        return 1
+    fi
+
+    # Test basic curl functionality
+    if ! curl --version >/dev/null 2>&1; then
+        echo "ERROR: curl is installed but not functional"
+        return 1
+    fi
+
+    return 0
+}
+
+fetch_metadata() {
+    # Fetch from EC2 metadata service with retries and timeouts
+    # Usage: fetch_metadata <path> [max_attempts] [retry_delay]
+    # Example: fetch_metadata "placement/availability-zone" 10 2
+
+    local metadata_path="$1"
+    local max_attempts="${2:-10}"
+    local retry_delay="${3:-2}"
+    local timeout="${4:-5}"
+
+    # Ensure curl is available
+    if ! verify_curl; then
+        echo "ERROR: curl not available for metadata fetch" >&2
+        return 1
+    fi
+
+    local attempt=1
+    local token=""
+
+    # Get IMDSv2 token for secure metadata access (with retries)
+    while [ "$attempt" -le "$max_attempts" ]; do
+        token=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+            -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" \
+            --connect-timeout "$timeout" \
+            --max-time "$((timeout * 2))" 2>/dev/null || true)
+
+        if [ -n "$token" ]; then
+            break
+        fi
+
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "ERROR: Failed to obtain IMDSv2 token after $max_attempts attempts" >&2
+            return 1
+        fi
+
+        echo "Metadata service not ready, retrying in ${retry_delay}s (attempt ${attempt}/${max_attempts})..." >&2
+        sleep "$retry_delay"
+        attempt=$((attempt + 1))
+    done
+
+    # Fetch metadata using the token
+    attempt=1
+    local result=""
+    while [ "$attempt" -le "$max_attempts" ]; do
+        result=$(curl -sf -H "X-aws-ec2-metadata-token: $token" \
+            "http://169.254.169.254/latest/meta-data/${metadata_path}" \
+            --connect-timeout "$timeout" \
+            --max-time "$((timeout * 2))" 2>/dev/null || true)
+
+        if [ -n "$result" ]; then
+            echo "$result"
+            return 0
+        fi
+
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            echo "ERROR: Failed to fetch metadata '${metadata_path}' after $max_attempts attempts" >&2
+            return 1
+        fi
+
+        echo "Metadata fetch failed, retrying in ${retry_delay}s (attempt ${attempt}/${max_attempts})..." >&2
+        sleep "$retry_delay"
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# ===================================
 # Core System Dependencies
 # ===================================
 echo "Installing core system dependencies..."
@@ -182,11 +269,101 @@ pkg_update_once
 
 # Batch install all core dependencies for performance (single apt/yum transaction)
 if [ "$OS_FAMILY" = "debian" ]; then
-    # Debian/Ubuntu: Install all dependencies in one transaction
-    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 libfuse2 fuse
+    # Debian/Ubuntu: Install all dependencies in one transaction (handle fuse package rename on 24.04)
+    fuse_pkg=""
+    if apt-cache show libfuse2 >/dev/null 2>&1; then
+        fuse_pkg="libfuse2"
+    elif apt-cache show libfuse2t64 >/dev/null 2>&1; then
+        fuse_pkg="libfuse2t64"
+    fi
+    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 fuse ${fuse_pkg:+$fuse_pkg}
 else
-    # Amazon Linux: Install all dependencies in one transaction
-    pkg_install curl nfs-utils || true
+    # Amazon Linux: Replace curl-minimal with full curl (AL2023 ships with curl-minimal)
+    # Use --allowerasing to allow yum to replace curl-minimal with curl
+    yum install -y curl nfs-utils --allowerasing || true
 fi
 
-echo "Core dependencies installed successfully"
+# Verify curl installation and functionality
+if ! verify_curl; then
+    echo "ERROR: curl installation verification failed"
+    echo "Attempting to reinstall curl..."
+    if [ "$OS_FAMILY" = "debian" ]; then
+        apt-get remove -y curl-minimal 2>/dev/null || true
+        pkg_install curl
+    else
+        yum remove -y curl-minimal 2>/dev/null || true
+        yum install -y curl --allowerasing
+    fi
+
+    # Final verification
+    if ! verify_curl; then
+        echo "FATAL: curl installation failed after retry"
+        exit 1
+    fi
+fi
+
+echo "Core dependencies installed successfully (curl verified)"
+
+{% if enable_https and tier == "dev" %}
+# ===================================
+# HTTPS/TLS Setup (Tier 1 - Self-Signed)
+# ===================================
+echo "Setting up HTTPS with self-signed certificate..."
+
+# Install openssl if not present
+if [ "$OS_FAMILY" = "debian" ]; then
+    pkg_install openssl
+else
+    yum install -y openssl
+fi
+
+# Create SSL directory
+mkdir -p /etc/nginx/ssl
+chmod 700 /etc/nginx/ssl
+
+# Fetch public IP for certificate CN
+PUBLIC_IP="{{ public_ip }}"
+if [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP=$(fetch_metadata "public-ipv4" 5 2 3 || echo "localhost")
+fi
+
+# Generate self-signed certificate valid for 1 year
+echo "Generating self-signed SSL certificate for IP: $PUBLIC_IP"
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/nginx/ssl/selfsigned.key \
+    -out /etc/nginx/ssl/selfsigned.crt \
+    -subj "/C=US/ST=State/L=City/O=GeuseMaker/OU=Development/CN=$PUBLIC_IP" \
+    2>&1 || {
+        echo "ERROR: Failed to generate self-signed certificate"
+        exit 1
+    }
+
+# Set appropriate permissions
+chmod 600 /etc/nginx/ssl/selfsigned.key
+chmod 644 /etc/nginx/ssl/selfsigned.crt
+
+# Verify certificate was created
+if [ ! -f /etc/nginx/ssl/selfsigned.crt ] || [ ! -f /etc/nginx/ssl/selfsigned.key ]; then
+    echo "ERROR: SSL certificate files not found after generation"
+    exit 1
+fi
+
+# Create NGINX configuration directory
+mkdir -p /etc/nginx/conf.d
+
+# Deploy NGINX SSL configuration
+# NOTE: nginx will be installed and started AFTER Docker services are running
+# This avoids 'host not found' errors when nginx -t tries to resolve container hostnames
+cat > /etc/nginx/conf.d/default.conf <<"EOF_NGINX_CONFIG"
+{% include 'nginx-ssl.conf.j2' %}
+
+EOF_NGINX_CONFIG
+
+echo "Self-signed SSL certificate generated successfully"
+echo "Certificate: /etc/nginx/ssl/selfsigned.crt"
+echo "Private key: /etc/nginx/ssl/selfsigned.key"
+echo "NGINX configuration created at /etc/nginx/conf.d/default.conf"
+echo "NGINX will be installed and started after Docker services are running"
+{% else %}
+echo "HTTPS not enabled or not Tier 1, skipping self-signed certificate generation"
+{% endif %}

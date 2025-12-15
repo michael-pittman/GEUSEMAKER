@@ -49,7 +49,7 @@ def mock_state() -> DeploymentState:
 
 
 def test_stream_userdata_logs_streams_and_displays(mock_state: DeploymentState) -> None:
-    """Test _stream_userdata_logs streams logs and displays them line by line."""
+    """Test _stream_userdata_logs streams logs using Rich Live context."""
     runner = DeploymentRunner(AWSClientFactory(), StateManager())
 
     mock_log_lines = [
@@ -62,10 +62,15 @@ def test_stream_userdata_logs_streams_and_displays(mock_state: DeploymentState) 
     with (
         patch("geusemaker.cli.interactive.runner.SSMService") as mock_ssm_class,
         patch("geusemaker.cli.interactive.runner.console") as mock_console,
+        patch("geusemaker.cli.interactive.runner.Live") as mock_live_class,
     ):
         mock_ssm = MagicMock()
         mock_ssm.stream_userdata_logs.return_value = iter(mock_log_lines)
         mock_ssm_class.return_value = mock_ssm
+
+        # Mock Live context manager
+        mock_live = MagicMock()
+        mock_live_class.return_value.__enter__.return_value = mock_live
 
         runner._stream_userdata_logs(mock_state)
 
@@ -81,8 +86,13 @@ def test_stream_userdata_logs_streams_and_displays(mock_state: DeploymentState) 
             timeout_seconds=600,
         )
 
-        # Verify console.print was called for each log line plus headers/footer
-        assert mock_console.print.call_count >= len(mock_log_lines)
+        # Verify Live context was used for streaming logs
+        mock_live_class.assert_called_once()
+        # Verify live.update was called for each log line
+        assert mock_live.update.call_count == len(mock_log_lines)
+
+        # Verify console.print was called for header and completion message
+        assert mock_console.print.call_count >= 2
 
 
 def test_stream_userdata_logs_handles_runtime_error(mock_state: DeploymentState) -> None:

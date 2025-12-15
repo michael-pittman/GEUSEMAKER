@@ -42,10 +42,13 @@ class UserDataGenerator:
         try:
             # Load all templates
             base_tmpl = self._env.get_template("base.sh.j2")
+            gpu_tmpl = self._env.get_template("gpu.sh.j2")
             docker_tmpl = self._env.get_template("docker.sh.j2")
             efs_tmpl = self._env.get_template("efs.sh.j2")
             services_tmpl = self._env.get_template("services.sh.j2")
+            nginx_setup_tmpl = self._env.get_template("nginx-setup.sh.j2")
             healthcheck_tmpl = self._env.get_template("healthcheck.sh.j2")
+            ollama_models_tmpl = self._env.get_template("ollama-models.sh.j2")
 
             # Convert config to dict for template rendering and backfill runtime bundle when requested
             context = config.model_dump()
@@ -55,12 +58,18 @@ class UserDataGenerator:
                 )
 
             # Render each section
+            # GPU validation runs after base setup but before Docker (NVIDIA drivers must be present)
+            # NGINX setup runs after Docker services (requires container hostnames for validation)
+            # Model preloading runs after healthcheck in background (non-blocking)
             sections = [
                 base_tmpl.render(context),
+                gpu_tmpl.render(context),
                 efs_tmpl.render(context),
                 docker_tmpl.render(context),
                 services_tmpl.render(context),
+                nginx_setup_tmpl.render(context),
                 healthcheck_tmpl.render(context),
+                ollama_models_tmpl.render(context),
             ]
 
             # Combine sections into complete script

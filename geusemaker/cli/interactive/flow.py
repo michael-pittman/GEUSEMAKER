@@ -18,6 +18,7 @@ from geusemaker.cli.interactive.prompts import InteractivePrompts
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig
 from geusemaker.models.discovery import (
+    EFSInfo,
     KeyPairInfo,
     SecurityGroupInfo,
     SubnetInfo,
@@ -26,6 +27,7 @@ from geusemaker.models.discovery import (
 from geusemaker.services.cost import CostEstimator
 from geusemaker.services.discovery import (
     DiscoveryCache,
+    EFSDiscoveryService,
     KeyPairDiscoveryService,
     SecurityGroupDiscoveryService,
     VPCDiscoveryService,
@@ -95,10 +97,22 @@ class DiscoveryFacade:
     def list_key_pairs(self) -> list[KeyPairInfo]:
         return self._safe(self._kp_service.list_key_pairs)
 
+    def list_file_systems(self) -> list[EFSInfo]:
+        return self._safe(self._efs_service.list_file_systems)
+
+    def validate_efs_for_subnets(self, efs_id: str, subnet_ids: list[str]) -> bool:
+        """Check if EFS has mount targets in all required subnets."""
+        try:
+            result = self._efs_service.validate_efs_for_subnets(efs_id, subnet_ids)
+            return result.is_valid
+        except Exception:  # noqa: BLE001
+            return False
+
     def _init_services(self) -> None:
         self._vpc_service = VPCDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
         self._sg_service = SecurityGroupDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
         self._kp_service = KeyPairDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
+        self._efs_service = EFSDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
 
     def _safe(self, fn):
         try:
@@ -123,7 +137,8 @@ class InteractiveFlow:
         self.dialogs = dialogs or Dialogs()
         self.prompts = prompts or InteractivePrompts(dialogs=self.dialogs)
         self.session = session_store or InteractiveSessionStore()
-        self.state: dict[str, Any] = initial_state.copy() if initial_state else {}
+        self._initial_state = initial_state.copy() if initial_state else {}
+        self.state: dict[str, Any] = self._initial_state.copy()
         self._discovery = DiscoveryFacade(self.client_factory, region=self.state.get("region", "us-east-1"))
         pricing = PricingService(self.client_factory, region=self.state.get("region", "us-east-1"))
         self._cost_estimator = CostEstimator(
@@ -131,13 +146,17 @@ class InteractiveFlow:
             pricing_service=pricing,
             region=self.state.get("region", "us-east-1"),
         )
+        self._force_prompt: bool = False
+        self._resumed_session: bool = False
 
         self._steps = [
             self._step_stack_name,
             self._step_region,
             self._step_tier,
+            self._step_compute_type,
             self._step_spot,
             self._step_instance_type,
+            self._step_ami,
             self._step_discovery,
             self._step_cost_preview,
             self._step_confirm,
@@ -152,12 +171,15 @@ class InteractiveFlow:
             try:
                 self._steps[idx]()
                 self.session.save(self._serializable_state())
+                self._force_prompt = False
                 idx += 1
             except DialogBack:
+                self._force_prompt = True
                 idx = max(0, idx - 1)
                 continue
             except DialogAbort as exc:
-                self.session.save(self._serializable_state())
+                # User chose to quit; clear the saved session to avoid stale resumes
+                self.session.clear()
                 raise InteractiveAbort(str(exc)) from exc
         self.session.clear()
         return self._build_config()
@@ -165,17 +187,42 @@ class InteractiveFlow:
     def _maybe_resume(self) -> None:
         saved = self.session.load()
         if not saved:
+            self._resumed_session = False
             return
-        if self.prompts.ask_resume(str(self.session.path)):
-            self.state.update(saved)
-            messages.info("Resuming saved interactive session.")
-        else:
+        try:
+            if self.prompts.ask_resume(str(self.session.path)):
+                self.state.update(saved)
+                messages.info("Resuming saved interactive session.")
+                self._resumed_session = True
+            else:
+                # User chose not to resume - clear session and reset state completely
+                self.session.clear()
+                self.state = self._initial_state.copy()
+                self._resumed_session = False
+        except DialogAbort as exc:
+            # User chose to quit - clear session and reset state
             self.session.clear()
+            self.state = self._initial_state.copy()
+            self._resumed_session = False
+            raise InteractiveAbort(str(exc)) from exc
 
     def _step_stack_name(self) -> None:
-        self.state["stack_name"] = self.prompts.stack_name(default=self.state.get("stack_name"))
+        saved_name = self.state.get("stack_name")
+        # Only skip prompt if we resumed AND have a valid non-empty stack name
+        if self._resumed_session and not self._force_prompt and saved_name and saved_name != "None":
+            messages.info(f"Using saved stack name: {saved_name}")
+            return
+        self.state["stack_name"] = self.prompts.stack_name(
+            default=self.state.get("stack_name") if self.state.get("stack_name") != "None" else None
+        )
 
     def _step_region(self) -> None:
+        saved_region = self.state.get("region")
+        if self._resumed_session and not self._force_prompt and saved_region:
+            self._discovery.set_region(saved_region)
+            pricing = PricingService(self.client_factory, region=saved_region)
+            self._cost_estimator = CostEstimator(self.client_factory, pricing_service=pricing, region=saved_region)
+            return
         region = self.prompts.region(default=self.state.get("region"))
         if region != self._discovery.region:
             self._discovery.set_region(region)
@@ -184,19 +231,73 @@ class InteractiveFlow:
         self.state["region"] = region
 
     def _step_tier(self) -> None:
+        if self._resumed_session and not self._force_prompt and self.state.get("tier"):
+            return
         self.state["tier"] = self.prompts.tier(default=self.state.get("tier"))
 
+    def _step_compute_type(self) -> None:
+        if self._resumed_session and not self._force_prompt and self.state.get("compute_type"):
+            return
+        self.state["compute_type"] = self.prompts.compute_type(default=self.state.get("compute_type"))
+
     def _step_spot(self) -> None:
+        if self._resumed_session and not self._force_prompt and "use_spot" in self.state:
+            return
         self.state["use_spot"] = self.prompts.use_spot(default=self.state.get("use_spot", True))
 
     def _step_instance_type(self) -> None:
-        tier = self.state.get("tier", "dev")
-        self.state["instance_type"] = self.prompts.instance_type(
-            tier,
-            default=self.state.get("instance_type"),
-        )
+        if self._resumed_session and not self._force_prompt and self.state.get("instance_type"):
+            return
+
+        # Auto-select instance type based on compute_type if available
+        if self.state.get("compute_type"):
+            from geusemaker.services.compute import InstanceTypeSelector
+
+            selector = InstanceTypeSelector(
+                client_factory=self.client_factory,
+                pricing_service=PricingService(self.client_factory, region=self._discovery.region),
+                region=self._discovery.region,
+            )
+
+            selection = selector.select_best_instance(
+                compute_type=self.state["compute_type"],
+                use_spot=self.state.get("use_spot", True),
+                region=self._discovery.region,
+            )
+
+            self.state["instance_type"] = selection.instance_type
+            self.state["_instance_selection_reason"] = selection.reason
+            self.state["_instance_selection_fallback"] = selection.fallback_occurred
+        else:
+            # Fallback to manual selection if compute_type not set
+            self.state["instance_type"] = self.prompts.instance_type(
+                default=self.state.get("instance_type"),
+            )
+
+    def _step_ami(self) -> None:
+        ami_keys = ["os_type", "architecture", "ami_type", "ami_id"]
+        if self._resumed_session and not self._force_prompt and all(key in self.state for key in ami_keys):
+            return
+        self.state["os_type"] = self.prompts.os_type(default=self.state.get("os_type"))
+        self.state["architecture"] = self.prompts.architecture(default=self.state.get("architecture"))
+        self.state["ami_type"] = self.prompts.ami_type(default=self.state.get("ami_type"))
+        self.state["ami_id"] = self.prompts.custom_ami_id(default=self.state.get("ami_id"))
 
     def _step_discovery(self) -> None:
+        discovery_keys = [
+            "vpc_id",
+            "subnet_id",
+            "storage_subnet_id",
+            "public_subnet_ids",
+            "private_subnet_ids",
+            "security_group_id",
+            "efs_id",
+            "create_mount_target",
+            "attach_internet_gateway",
+            "keypair_name",
+        ]
+        if self._resumed_session and not self._force_prompt and all(key in self.state for key in discovery_keys):
+            return
         with spinner("Discovering AWS resources"):
             vpcs = self._discovery.list_vpcs()
         tables.resource_table(vpcs=vpcs)
@@ -268,6 +369,45 @@ class InteractiveFlow:
             self.state["security_group_id"] = None
             self.state["attach_internet_gateway"] = False
 
+        # EFS selection (always runs - EFS is regional, independent of VPC creation)
+        with spinner("Discovering EFS filesystems"):
+            efs_filesystems = self._discovery.list_file_systems()
+        tables.resource_table(efs_filesystems=efs_filesystems)
+        selected_efs = self._select_efs_filesystem(efs_filesystems)
+
+        if selected_efs:
+            self.state["efs_id"] = selected_efs.file_system_id
+            # Validate mount target coverage only if we have an existing storage subnet
+            storage_subnet_id = self.state.get("storage_subnet_id")
+            if storage_subnet_id:
+                # Reusing existing VPC/subnet - validate mount targets immediately
+                has_mount_target = any(mt.subnet_id == storage_subnet_id for mt in selected_efs.mount_targets)
+                if not has_mount_target:
+                    # Ask user if they want to create a mount target
+                    if self.prompts.create_mount_target_confirm(selected_efs.file_system_id, storage_subnet_id):
+                        self.state["create_mount_target"] = True
+                        messages.info(
+                            f"Mount target will be created for {selected_efs.file_system_id} in {storage_subnet_id}"
+                        )
+                    else:
+                        messages.warning(
+                            f"EFS {selected_efs.file_system_id} cannot be used without a mount target in the storage subnet. "
+                            "A new EFS will be created instead."
+                        )
+                        self.state["efs_id"] = None
+                        self.state["create_mount_target"] = False
+                else:
+                    self.state["create_mount_target"] = False
+            else:
+                # Creating new VPC/subnet - mount target will be created during deployment
+                self.state["create_mount_target"] = True
+                messages.info(
+                    f"Mount target for {selected_efs.file_system_id} will be created after VPC/subnet provisioning"
+                )
+        else:
+            self.state["efs_id"] = None
+            self.state["create_mount_target"] = False
+
         with spinner("Discovering key pairs"):
             key_pairs = self._discovery.list_key_pairs()
         tables.resource_table(key_pairs=key_pairs)
@@ -286,13 +426,46 @@ class InteractiveFlow:
 
     def _step_cost_preview(self) -> None:
         config = self._build_config()
-        estimate = self._cost_estimator.estimate_deployment_cost(config)
+        try:
+            estimate = self._cost_estimator.estimate_deployment_cost(config)
+        except Exception as exc:  # noqa: BLE001
+            # Cost estimation failed - show error and let user go back to fix config
+            messages.warning(
+                f"Cost estimation failed: {exc}\n"
+                "This usually happens due to temporary AWS API issues or invalid configuration. "
+                "You can go back to adjust settings or proceed without cost preview."
+            )
+            # Ask user if they want to continue without cost estimate
+            try:
+                if self.dialogs.confirm(
+                    "Continue deployment without cost estimate?",
+                    default=False,
+                    help_text="You can proceed without cost preview or go back to adjust configuration.",
+                ):
+                    self.state["cost_monthly_estimate"] = None
+                    return
+            except DialogAbort:
+                # User chose to quit
+                raise
+            # User wants to go back and fix the issue
+            raise DialogBack() from exc
+
         tables.cost_preview_table(estimate)
         self.state["cost_monthly_estimate"] = float(estimate.monthly_cost)
         if not self.prompts.confirm_costs():
             raise DialogBack()
 
     def _step_confirm(self) -> None:
+        # Show comprehensive deployment summary before confirmation
+        config = self._build_config()
+        cost_estimate = self.state.get("cost_monthly_estimate")
+        instance_selection_reason = self.state.get("_instance_selection_reason")
+        tables.deployment_summary_table(
+            config,
+            cost_estimate=cost_estimate,
+            instance_selection_reason=instance_selection_reason,
+        )
+
         if not self.prompts.confirm_deploy():
             raise DialogAbort("User cancelled before deployment.")
 
@@ -311,6 +484,19 @@ class InteractiveFlow:
         choice = self.prompts.choose_from_list("Select security group", options, default_index=0)
         return None if choice == 0 else groups[choice - 1]
 
+    def _select_efs_filesystem(self, filesystems: list[EFSInfo]) -> EFSInfo | None:
+        if not filesystems:
+            messages.info("No EFS filesystems found; a new one will be created.")
+            return None
+        # Filter to only show available filesystems
+        available_fs = [fs for fs in filesystems if fs.lifecycle_state == "available"]
+        if not available_fs:
+            messages.info("No available EFS filesystems found; a new one will be created.")
+            return None
+        options = [f"{fs.file_system_id} ({fs.name or 'unnamed'})" for fs in available_fs]
+        choice = self.prompts.choose_from_list("Select EFS filesystem", options, default_index=0)
+        return None if choice == 0 else available_fs[choice - 1]
+
     def _build_config(self) -> DeploymentConfig:
         return DeploymentConfig(
             stack_name=self.state.get("stack_name", "geusemaker"),
@@ -318,9 +504,10 @@ class InteractiveFlow:
             region=self.state.get("region", "us-east-1"),
             instance_type=self.state.get("instance_type", "t3.medium"),
             use_spot=self.state.get("use_spot", True),
-            os_type=(self.state.get("os_type") or "ubuntu-22.04").lower(),
-            architecture=(self.state.get("architecture") or "x86_64").lower(),
-            ami_type=(self.state.get("ami_type") or "base").lower(),
+            os_type=self.state.get("os_type", "ubuntu-22.04").lower(),
+            architecture=self.state.get("architecture", "x86_64").lower(),
+            ami_type=self.state.get("ami_type", "base").lower(),
+            ami_id=self.state.get("ami_id"),
             vpc_id=self.state.get("vpc_id"),
             subnet_id=self.state.get("subnet_id"),
             attach_internet_gateway=self.state.get("attach_internet_gateway", False),
@@ -328,6 +515,7 @@ class InteractiveFlow:
             private_subnet_ids=self.state.get("private_subnet_ids"),
             storage_subnet_id=self.state.get("storage_subnet_id"),
             security_group_id=self.state.get("security_group_id"),
+            efs_id=self.state.get("efs_id"),
             keypair_name=self.state.get("keypair_name"),
         )
 

@@ -160,3 +160,47 @@ def test_destruction_preserves_reused_vpc(tmp_path: Path) -> None:
 
     assert not any(call[0] == "delete_vpc" for call in ec2.calls)
     assert any(res.resource_type == "vpc" for res in result.preserved_resources)
+
+
+def test_destruction_preserves_efs_when_flag_set(tmp_path: Path) -> None:
+    """Test that EFS filesystem is preserved when --preserve-efs flag is used."""
+    state = _state()
+    manager = StateManager(base_path=tmp_path)
+    ec2 = StubEC2()
+    efs = StubEFS(mount_targets=["mt-1", "mt-2"])
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+
+    result = service.destroy(state, preserve_efs=True)
+
+    # EFS and mount targets should NOT be deleted
+    assert not any(call[0] == "delete_mt" for call in efs.calls)
+    assert not any(call[0] == "delete_fs" for call in efs.calls)
+
+    # EFS should be in preserved resources
+    assert any(res.resource_type == "efs" and res.resource_id == "fs-1" for res in result.preserved_resources)
+    assert any(
+        res.resource_type == "efs_mount_target" and res.reason == "preserved by --preserve-efs flag"
+        for res in result.preserved_resources
+    )
+
+    # Other resources should still be deleted
+    assert any(call[0] == "terminate" for call in ec2.calls)
+    assert any(call[0] == "delete_vpc" for call in ec2.calls)
+
+
+def test_destruction_deletes_efs_when_flag_not_set(tmp_path: Path) -> None:
+    """Test that EFS filesystem is deleted normally when --preserve-efs flag is not used."""
+    state = _state()
+    manager = StateManager(base_path=tmp_path)
+    ec2 = StubEC2()
+    efs = StubEFS(mount_targets=["mt-1"])
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+
+    result = service.destroy(state, preserve_efs=False)
+
+    # EFS and mount targets SHOULD be deleted
+    assert ("delete_mt", "mt-1") in efs.calls
+    assert ("delete_fs", "fs-1") in efs.calls
+
+    # EFS should NOT be in preserved resources
+    assert not any(res.resource_type == "efs" for res in result.preserved_resources)

@@ -7,10 +7,29 @@ echo "Running post-startup health checks..."
 # Ensure run_compose helper exists (when services block was skipped)
 if ! declare -f run_compose >/dev/null 2>&1; then
     run_compose() {
+        local compose_dir
+        compose_dir="$(dirname "$COMPOSE_FILE_PATH")"
+        if [ ! -d "$compose_dir" ]; then
+            echo "ERROR: Compose directory not found: $compose_dir"
+            return 1
+        fi
+        # Source runtime.env so Compose variable interpolation works (env_file only populates containers)
+        if [ -f "$RUNTIME_ENV_FILE" ]; then
+            set -a
+            # shellcheck disable=SC2046
+            while IFS='=' read -r key value; do
+                [ -z "$key" ] && continue
+                case "$key" in
+                    \#*) continue ;;
+                esac
+                export "$key=$value"
+            done < "$RUNTIME_ENV_FILE"
+            set +a
+        fi
         if command -v docker-compose >/dev/null 2>&1; then
-            docker-compose -f "$COMPOSE_FILE_PATH" "$@"
+            (cd "$compose_dir" && docker-compose -f "$COMPOSE_FILE_PATH" "$@")
         else
-            docker compose -f "$COMPOSE_FILE_PATH" "$@"
+            (cd "$compose_dir" && docker compose -f "$COMPOSE_FILE_PATH" "$@")
         fi
     }
 fi
@@ -39,7 +58,15 @@ check_service() {
     local path=${3:-/}
 
     echo "Checking $service on port $port..."
-    if curl -sf "http://localhost:$port$path" > /dev/null 2>&1; then
+
+    # Verify curl is available for health checks
+    if ! verify_curl; then
+        echo "✗ $service health check skipped (curl not available)"
+        return
+    fi
+
+    # Use curl with explicit timeout to prevent hanging
+    if curl -sf --connect-timeout 5 --max-time 10 "http://localhost:$port$path" > /dev/null 2>&1; then
         echo "✓ $service is healthy"
     else
         echo "✗ $service health check failed (may still be starting)"

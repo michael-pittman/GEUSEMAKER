@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
-from geusemaker.cli.branding import EMOJI
 from geusemaker.cli.components import ProgressTracker, messages, spinner, tables
 from geusemaker.cli.interactive.flow import InteractiveAbort, InteractiveFlow
 from geusemaker.cli.interactive.runner import (
@@ -65,7 +65,7 @@ class InteractiveDeployer:
             return None
 
         messages.success(
-            f"{EMOJI['rocket']} Deployment created: [bold]{state.stack_name}[/bold] in [bold]{state.config.region}[/bold].",
+            f"Deployment created: [bold]{state.stack_name}[/bold] in [bold]{state.config.region}[/bold].",
         )
         self._show_summary(state)
         self._maybe_export_config(config)
@@ -91,12 +91,39 @@ class InteractiveDeployer:
         messages.success("Cleanup complete.")
 
     def _show_summary(self, state: DeploymentState) -> None:
+        host = state.public_ip or state.private_ip
+        
+        # Build URLs based on tier
+        if state.config.tier == "dev":
+            # Tier 1: HTTPS through Nginx proxy
+            protocol = "https"
+            n8n_url = f"{protocol}://{host}" if host else "-"
+            qdrant_ui_url = f"{protocol}://{host}/qdrant-ui/" if host else "-"
+        elif state.config.tier == "automation":
+            # Tier 2: Use ALB DNS (already in n8n_url)
+            n8n_url = state.n8n_url or "-"
+            # Extract host from n8n_url for qdrant-ui
+            if state.n8n_url:
+                parsed = urlparse(state.n8n_url)
+                qdrant_ui_url = f"{parsed.scheme}://{parsed.netloc}/qdrant-ui/"
+            else:
+                qdrant_ui_url = "-"
+        else:  # Tier 3 (gpu)
+            # Tier 3: Use CloudFront domain (already in n8n_url)
+            n8n_url = state.n8n_url or "-"
+            if state.n8n_url:
+                parsed = urlparse(state.n8n_url)
+                qdrant_ui_url = f"{parsed.scheme}://{parsed.netloc}/qdrant-ui/"
+            else:
+                qdrant_ui_url = "-"
+        
         summary = [
             f"Status: {state.status}",
             f"Region: {state.config.region}",
             f"Public IP: {state.public_ip or '-'}",
-            f"SSH: ssh ubuntu@{state.public_ip or state.private_ip}",
-            f"n8n: {state.n8n_url or '-'}",
+            f"SSH: ssh ubuntu@{host or 'unknown'}",
+            f"n8n: {n8n_url}",
+            f"Qdrant Dashboard: {qdrant_ui_url}",
         ]
         tables.resource_recommendations_panel(summary)
 

@@ -11,10 +11,16 @@ else
     use_runtime_bundle="{{ 'true' if use_runtime_bundle else 'false' }}"
 
     run_compose() {
+        local compose_dir
+        compose_dir="$(dirname "$COMPOSE_FILE_PATH")"
+        if [ ! -d "$compose_dir" ]; then
+            echo "ERROR: Compose directory not found: $compose_dir"
+            exit 1
+        fi
         if command -v docker-compose >/dev/null 2>&1; then
-            docker-compose -f "$COMPOSE_FILE_PATH" "$@"
+            (cd "$compose_dir" && docker-compose -f "$COMPOSE_FILE_PATH" "$@")
         else
-            docker compose -f "$COMPOSE_FILE_PATH" "$@"
+            (cd "$compose_dir" && docker compose -f "$COMPOSE_FILE_PATH" "$@")
         fi
     }
 
@@ -35,6 +41,33 @@ EOF
 {% for key, value in custom_env.items() %}
         printf "%s\n" "{{ key }}={{ value }}" >> "$RUNTIME_ENV_FILE"
 {% endfor %}
+
+        if [ ! -f "$RUNTIME_ENV_FILE" ]; then
+            echo "ERROR: Failed to create runtime env file at $RUNTIME_ENV_FILE"
+            exit 1
+        fi
+        if ! grep -q "^POSTGRES_PASSWORD=" "$RUNTIME_ENV_FILE"; then
+            echo "ERROR: POSTGRES_PASSWORD missing from $RUNTIME_ENV_FILE"
+            exit 1
+        fi
+    }
+
+    export_runtime_env() {
+        if [ ! -f "$RUNTIME_ENV_FILE" ]; then
+            echo "ERROR: Runtime env file not found at $RUNTIME_ENV_FILE"
+            exit 1
+        fi
+        # shellcheck disable=SC2046
+        set -a
+        # Export all key=value pairs (supports basic lines without spaces)
+        while IFS='=' read -r key value; do
+            [ -z "$key" ] && continue
+            case "$key" in
+                \#*) continue ;;
+            esac
+            export "$key=$value"
+        done < "$RUNTIME_ENV_FILE"
+        set +a
     }
 
     write_compose_file() {
@@ -54,6 +87,7 @@ services:
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
       - N8N_METRICS=${N8N_METRICS:-false}
+      - N8N_SECURE_COOKIE=true
     ports:
       - "${N8N_PORT:-5678}:5678"
     volumes:
@@ -77,6 +111,17 @@ services:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
+{% if tier == "gpu" %}
+    # GPU device reservations (requires Docker Compose 1.28.0+ and nvidia-container-toolkit)
+    # Only enabled for GPU tier deployments
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+{% endif %}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s
@@ -149,6 +194,7 @@ EOF
     }
 
     write_runtime_env
+    export_runtime_env
 
     if [ "$use_runtime_bundle" = "true" ]; then
         if [ ! -f "$COMPOSE_FILE_PATH" ]; then
@@ -164,20 +210,113 @@ EOF
     echo "Pre-pulling Docker images to EFS-backed data directory..."
     run_compose pull
 
+    wait_for_containers_running() {
+        local max_attempts=30
+        local attempt=1
+        local delay=2
+        local expected_containers=("n8n" "ollama" "qdrant" "crawl4ai" "postgres")
+
+        echo "Waiting for containers to reach running state..."
+
+        while [ $attempt -le $max_attempts ]; do
+            local all_running=true
+            local running_count=0
+
+            for container in "${expected_containers[@]}"; do
+                if docker inspect "$container" >/dev/null 2>&1; then
+                    local state
+                    state=$(docker inspect -f '{% raw %}{{.State.Status}}{% endraw %}' "$container" 2>/dev/null || echo "unknown")
+                    if [ "$state" = "running" ]; then
+                        running_count=$((running_count + 1))
+                    else
+                        all_running=false
+                        echo "  Container $container state: $state (attempt $attempt/$max_attempts)"
+                    fi
+                else
+                    all_running=false
+                    echo "  Container $container not found (attempt $attempt/$max_attempts)"
+                fi
+            done
+
+            if [ "$all_running" = true ]; then
+                echo "All $running_count containers are running"
+                return 0
+            fi
+
+            if [ $attempt -lt $max_attempts ]; then
+                sleep $delay
+                # Exponential backoff up to 10 seconds
+                if [ $delay -lt 10 ]; then
+                    delay=$((delay + 1))
+                fi
+            fi
+            attempt=$((attempt + 1))
+        done
+
+        echo "ERROR: Not all containers reached running state after $max_attempts attempts"
+        run_compose ps
+        return 1
+    }
+
+    verify_docker_network() {
+        local max_attempts=20
+        local attempt=1
+        local delay=3
+
+        echo "Verifying Docker network hostname resolution..."
+
+        while [ $attempt -le $max_attempts ]; do
+            # Test hostname resolution from n8n container to other services
+            local network_ready=true
+
+            # Check if n8n can resolve postgres hostname (critical for n8n database)
+            if ! docker exec n8n getent hosts postgres >/dev/null 2>&1; then
+                network_ready=false
+                echo "  DNS resolution not ready: n8n -> postgres (attempt $attempt/$max_attempts)"
+            fi
+
+            # Check if n8n can resolve ollama hostname (critical for AI workflows)
+            if ! docker exec n8n getent hosts ollama >/dev/null 2>&1; then
+                network_ready=false
+                echo "  DNS resolution not ready: n8n -> ollama (attempt $attempt/$max_attempts)"
+            fi
+
+            if [ "$network_ready" = true ]; then
+                echo "Docker network hostname resolution verified"
+                return 0
+            fi
+
+            if [ $attempt -lt $max_attempts ]; then
+                sleep $delay
+            fi
+            attempt=$((attempt + 1))
+        done
+
+        echo "ERROR: Docker network hostname resolution failed after $max_attempts attempts"
+        echo "Network diagnostics:"
+        docker network ls
+        docker network inspect "$(docker inspect n8n -f '{% raw %}{{range .NetworkSettings.Networks}}{{.NetworkID}}{{end}}{% endraw %}' 2>/dev/null || echo bridge)" || true
+        return 1
+    }
+
     echo "Starting Docker Compose services..."
     run_compose up -d
 
-    # Wait for services to start
-    sleep 10
-
-    # Verify containers are running
-    if ! run_compose ps | grep -q "Up"; then
-        echo "WARNING: Some containers may not be running"
-        run_compose ps
-    else
-        echo "All services started successfully"
-        run_compose ps
+    # Wait for all containers to reach running state with retry logic
+    if ! wait_for_containers_running; then
+        echo "ERROR: Container startup failed"
+        exit 1
     fi
+
+    # Verify Docker network is ready for hostname resolution
+    if ! verify_docker_network; then
+        echo "WARNING: Docker network verification failed, but containers are running"
+        echo "Services may experience connectivity issues until network stabilizes"
+    fi
+
+    # Display final container status
+    echo "Services started successfully:"
+    run_compose ps
 
     touch "$SERVICES_GUARD"
 fi

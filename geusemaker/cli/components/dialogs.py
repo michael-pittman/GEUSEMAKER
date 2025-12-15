@@ -62,6 +62,84 @@ class Dialogs:
         help_text: str | None = None,
     ) -> bool:
         """Yes/No prompt that understands 'back'/'quit' navigation."""
+        # Use scripted input provider for testing (non-interactive)
+        if self._input_provider:
+            return self._confirm_fallback(prompt, default, allow_back, allow_quit, help_text)
+
+        # Use text-based fallback for non-TTY environments
+        if not is_tty() or not sys.stdin.isatty():
+            return self._confirm_fallback(prompt, default, allow_back, allow_quit, help_text)
+
+        # Print help text if provided
+        if help_text:
+            console.print(f"[{THEME.muted}]{help_text}[/{THEME.muted}]")
+
+        # Create custom style that matches our theme
+        custom_style = {
+            "qmark": "cyan bold",
+            "question": "cyan bold",
+            "answer": "cyan",
+            "pointer": "magenta bold",
+            "highlighted": "magenta bold",
+            "selected": "cyan",
+            "separator": "#888888",
+            "instruction": "#888888",
+            "text": "",
+            "disabled": "#888888",
+        }
+
+        instruction = "Use ↑↓ arrow keys to navigate, Enter to select, Ctrl+C to cancel"
+
+        try:
+            # Build choices list - Yes/No options
+            choices = ["Yes", "No"]
+            navigation_choices = []
+            if allow_back:
+                navigation_choices.append("← Back")
+            if allow_quit:
+                navigation_choices.append("✗ Quit")
+
+            # Combine regular choices with navigation choices
+            all_choices = choices + navigation_choices
+
+            # Set default choice based on default boolean
+            default_choice = "Yes" if default else "No"
+
+            # Use questionary.select for interactive arrow key navigation
+            style = questionary.Style.from_dict(custom_style)
+            result = questionary.select(
+                prompt,
+                choices=all_choices,
+                default=default_choice,
+                style=style,
+                instruction=instruction,
+            ).ask()
+
+            if result is None:
+                # User cancelled (Ctrl+C)
+                raise DialogAbort("User aborted interactive flow.")
+
+            # Check if result is a navigation command
+            if result == "← Back":
+                raise DialogBack()
+            if result == "✗ Quit":
+                raise DialogAbort("User aborted interactive flow.")
+
+            # Return boolean based on selection
+            return result == "Yes"
+
+        except KeyboardInterrupt as exc:  # noqa: B904
+            raise DialogAbort("User interrupted interactive flow.") from exc
+
+    def _confirm_fallback(
+        self,
+        prompt: str,
+        default: bool,
+        allow_back: bool,
+        allow_quit: bool,
+        help_text: str | None,
+    ) -> bool:
+        """Fallback text-based confirmation for non-interactive or testing scenarios."""
         suffix = "[Y/n]" if default else "[y/N]"
         while True:
             self._print_help(help_text)

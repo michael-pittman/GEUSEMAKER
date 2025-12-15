@@ -1,10 +1,16 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+*.egg
 *.egg-info/
+.eggs/
 .python-version
 .venv/
 venv/
+ENV/
+env/
 
 # Tooling
 .mypy_cache/
@@ -13,16 +19,70 @@ venv/
 .coverage
 coverage.xml
 htmlcov/
+.tox/
+.hypothesis/
+*.cover
+*.log
 
 # Builds
 build/
 dist/
+*.egg-info/
+*.whl
 
-# Editors
+# Editors & IDEs
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
 
-# Project
+# Project-specific
 .env
+.env.local
+.env.*.local
 .geusemaker/
+*.backup
+*.backup.*
+
+# Runtime bundles
+runtime-bundle.tar.gz
+runtime-bundle-*.tar.gz
+
+# AWS & Credentials
+.aws/
+*.pem
+*.key
+!*.example.key
+credentials
+config
+
+# Test artifacts
+.pytest_cache/
+test-results/
+junit.xml
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# OS files
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Junk directory (user's temporary files)
+Junk/

@@ -1,6 +1,27 @@
 version: "3.8"
 
 services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - /etc/nginx/conf.d:/etc/nginx/conf.d:ro
+      - /etc/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - n8n
+      - ollama
+      - qdrant
+      - crawl4ai
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "https://localhost/healthz", "--no-check-certificate"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -13,6 +34,7 @@ services:
       - N8N_PROTOCOL=http
       - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
       - N8N_METRICS=${N8N_METRICS:-false}
+      - N8N_SECURE_COOKIE=true
     ports:
       - "${N8N_PORT:-5678}:5678"
     volumes:
@@ -31,11 +53,23 @@ services:
       - ./runtime.env
     runtime: ${DOCKER_RUNTIME:-runc}
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
+      - OLLAMA_NUM_GPU=${OLLAMA_NUM_GPU:-1}
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
+    # GPU device reservations (requires Docker Compose 1.28.0+ and nvidia-container-toolkit)
+    # This section is conditionally injected via DOCKER_RUNTIME env var in services.sh.j2 template
+    # Only enabled for GPU tier deployments (tier == "gpu")
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s

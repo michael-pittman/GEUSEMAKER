@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from geusemaker.infra import AWSClientFactory
+from geusemaker.models.compute import InstanceSelection
 from geusemaker.models.cost import (
     ComponentCost,
     CostBreakdown,
@@ -45,9 +46,10 @@ class CostEstimator:
         cloudfront_requests: int = 1_000_000,
         alb_lcus: float = 1.0,
         hours_per_month: int = 730,
+        selection: InstanceSelection | None = None,
     ) -> CostEstimate:
         """Return a complete cost estimate for a deployment config."""
-        selection = self._spot_selector.select_instance_type(config)
+        selection = selection or self._spot_selector.select_instance_type(config)
         compute_cost = self.calculate_ec2_cost(
             instance_type=config.instance_type,
             is_spot=selection.is_spot,

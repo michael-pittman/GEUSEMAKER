@@ -26,6 +26,7 @@ from geusemaker.cli.commands.rollback import rollback
 from geusemaker.cli.commands.status import status
 from geusemaker.cli.commands.update import update
 from geusemaker.cli.commands.validate import validate
+from geusemaker.infra import AWSClientFactory
 
 
 def _resolve_version() -> str:
@@ -40,8 +41,14 @@ def _resolve_version() -> str:
 @click.version_option(version=_resolve_version(), prog_name="geusemaker")
 @click.option("--silent", is_flag=True, default=False, help="Suppress non-error output.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show verbose/debug output.")
+@click.option(
+    "--profile",
+    envvar="AWS_PROFILE",
+    default=None,
+    help="AWS profile name to use for all AWS calls (overrides default profile).",
+)
 @click.pass_context
-def cli(ctx: click.Context, silent: bool, verbose: bool) -> None:
+def cli(ctx: click.Context, silent: bool, verbose: bool, profile: str | None) -> None:
     """GeuseMaker CLI - deploy AI infrastructure to AWS."""
     if silent and verbose:
         raise click.UsageError("Cannot combine --silent and --verbose.", ctx=ctx)
@@ -53,7 +60,14 @@ def cli(ctx: click.Context, silent: bool, verbose: bool) -> None:
     else:
         set_verbosity(VerbosityLevel.NORMAL)
 
-    ctx.obj = {"verbosity": console, "silent": silent, "verbose": verbose}
+    AWSClientFactory.set_default_profile(profile)
+
+    ctx.obj = {
+        "verbosity": console,
+        "silent": silent,
+        "verbose": verbose,
+        "profile": profile,
+    }
 
     if ctx.invoked_subcommand is None and not silent:
         console.print(f"[bold cyan]{MAIN_BANNER}[/bold cyan]", verbosity="info")

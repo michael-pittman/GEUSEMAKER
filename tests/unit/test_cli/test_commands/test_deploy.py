@@ -43,7 +43,7 @@ class DummyOrchestrator:
     def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
         pass
 
-    def deploy(self, config):  # type: ignore[no-untyped-def]
+    def deploy(self, config, enable_rollback: bool = True):  # type: ignore[no-untyped-def] # noqa: ARG002
         DummyOrchestrator.last_config = config
         return type(
             "State",

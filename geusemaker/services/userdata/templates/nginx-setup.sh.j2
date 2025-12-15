@@ -1,0 +1,61 @@
+{% if enable_https and tier == "dev" %}
+# ===================================
+# NGINX Installation and Startup
+# ===================================
+# NOTE: This runs AFTER Docker services are started to ensure containers
+# are listening on localhost ports before NGINX starts proxying traffic
+
+NGINX_GUARD="/var/lib/geusemaker/nginx-configured"
+if [ -f "$NGINX_GUARD" ]; then
+    echo "NGINX already configured, skipping"
+else
+    echo "Installing NGINX web server..."
+    if [ "$OS_FAMILY" = "debian" ]; then
+        pkg_install nginx
+    else
+        yum install -y nginx
+    fi
+
+    # Verify NGINX is installed
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "ERROR: NGINX installation failed"
+        exit 1
+    fi
+
+    # Validate NGINX configuration (Docker containers must be running for hostname resolution)
+    echo "Validating NGINX configuration..."
+    if ! nginx -t 2>&1; then
+        echo "ERROR: NGINX configuration validation failed"
+        echo "Check /etc/nginx/conf.d/default.conf for syntax errors"
+        echo "Ensure Docker containers (n8n, ollama, qdrant, crawl4ai) are running"
+        exit 1
+    fi
+
+    # Enable and start NGINX service
+    echo "Starting NGINX service..."
+    if command -v systemctl >/dev/null 2>&1; then
+        # systemd-based systems (Amazon Linux 2023, Ubuntu 22.04+)
+        systemctl enable nginx
+        systemctl start nginx
+
+        # Verify NGINX is running
+        if ! systemctl is-active --quiet nginx; then
+            echo "ERROR: NGINX failed to start"
+            systemctl status nginx || true
+            exit 1
+        fi
+    else
+        # SysV init systems (fallback)
+        service nginx start
+        chkconfig nginx on 2>/dev/null || true
+    fi
+
+    echo "NGINX configured and running with HTTPS on port 443"
+    echo "Certificate: /etc/nginx/ssl/selfsigned.crt"
+    echo "Private key: /etc/nginx/ssl/selfsigned.key"
+
+    touch "$NGINX_GUARD"
+fi
+{% else %}
+echo "HTTPS not enabled or not Tier 1, skipping NGINX setup"
+{% endif %}

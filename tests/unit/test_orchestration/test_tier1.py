@@ -1,133 +1,20 @@
 from __future__ import annotations
 
 import gzip
-from dataclasses import dataclass
 
 import pytest
 
-from geusemaker.models import DeploymentConfig, SubnetResource, VPCResource
+from geusemaker.models import DeploymentConfig
 from geusemaker.orchestration.errors import OrchestrationError
 from geusemaker.orchestration.tier1 import Tier1Orchestrator
-
-
-@dataclass
-class StubStateManager:
-    saved_state = None
-
-    async def save_deployment(self, state) -> None:  # type: ignore[no-untyped-def]
-        self.saved_state = state
-
-
-class StubVPCService:
-    def __init__(self) -> None:
-        self.created = False
-        self.configured = False
-
-    def create_vpc_with_subnets(
-        self,
-        cidr_block: str,
-        name: str,
-        deployment: str | None = None,
-        tier: str | None = None,
-    ) -> VPCResource:  # noqa: ARG002
-        self.created = True
-        return self._build_vpc("vpc-new")
-
-    def configure_existing_vpc(
-        self,
-        vpc_id: str,
-        name: str | None = None,
-        deployment: str | None = None,
-        tier: str | None = None,
-        attach_internet_gateway: bool = False,
-    ) -> VPCResource:  # noqa: ARG002
-        self.configured = True
-        return self._build_vpc(vpc_id, created=False)
-
-    def _build_vpc(self, vpc_id: str, created: bool = True) -> VPCResource:
-        public = [
-            SubnetResource(
-                subnet_id="subnet-public-1",
-                vpc_id=vpc_id,
-                cidr_block="10.0.1.0/24",
-                availability_zone="us-east-1a",
-                is_public=True,
-                route_table_id="rtb-public",
-            ),
-        ]
-        private = [
-            SubnetResource(
-                subnet_id="subnet-private-1",
-                vpc_id=vpc_id,
-                cidr_block="10.0.101.0/24",
-                availability_zone="us-east-1b",
-                is_public=False,
-                route_table_id="rtb-private",
-            ),
-        ]
-        return VPCResource(
-            vpc_id=vpc_id,
-            cidr_block="10.0.0.0/16",
-            name="test",
-            public_subnets=public,
-            private_subnets=private,
-            internet_gateway_id="igw-1",
-            route_table_ids=["rtb-public"],
-            created_by_geusemaker=created,
-        )
-
-
-class StubSecurityGroupService:
-    def __init__(self) -> None:
-        self.last_ingress = None
-
-    def create_security_group(self, name: str, description: str, vpc_id: str, ingress_rules):  # type: ignore[no-untyped-def]  # noqa: ARG002
-        self.last_ingress = ingress_rules
-        return {"group_id": "sg-1"}
-
-
-class StubEFSService:
-    def __init__(self) -> None:
-        self.last_subnet_id = None
-        self.waited_for_available = False
-        self.waited_for_mount_target_available = False
-
-    def create_filesystem(self, tags):  # type: ignore[no-untyped-def]
-        return {"FileSystemId": "fs-1"}
-
-    def wait_for_available(self, fs_id: str, max_attempts: int = 60, delay: int = 5) -> None:  # noqa: ARG002
-        """Stub wait - EFS is immediately available in tests."""
-        self.waited_for_available = True
-
-    def create_mount_target(self, fs_id: str, subnet_id: str, security_groups):  # type: ignore[no-untyped-def]  # noqa: ARG002
-        self.last_subnet_id = subnet_id
-        return "mt-1"
-
-    def wait_for_mount_target_available(self, mount_target_id: str, max_attempts: int = 60, delay: int = 5) -> None:  # noqa: ARG002
-        """Stub wait - mount target is immediately available in tests."""
-        self.waited_for_mount_target_available = True
-
-
-class StubEC2Service:
-    def __init__(self) -> None:
-        self.last_subnet_id = None
-        self.last_dlami_args = None
-        self.last_user_data = None
-
-    def get_latest_dlami(self, **kwargs):  # type: ignore[no-untyped-def]
-        self.last_dlami_args = kwargs
-        return "ami-123"
-
-    def launch_instance(self, **kwargs):  # type: ignore[no-untyped-def]
-        self.last_subnet_id = kwargs.get("SubnetId")
-        self.last_user_data = kwargs.get("UserData")
-        return {"Instances": [{"InstanceId": "i-1"}]}
-
-    def wait_for_running(self, instance_id: str) -> None:  # noqa: ARG002
-        return None
-
-    def describe_instance(self, instance_id: str):  # type: ignore[no-untyped-def]  # noqa: ARG002
-        return {"PublicIpAddress": "1.2.3.4", "PrivateIpAddress": "10.0.1.10"}
+from tests.unit.test_orchestration.conftest import (
+    StubEC2Service,
+    StubEFSService,
+    StubIAMService,
+    StubSecurityGroupService,
+    StubStateManager,
+    StubVPCService,
+)
 
 
 def _orchestrator() -> tuple[Tier1Orchestrator, StubStateManager, StubVPCService]:
@@ -136,6 +23,7 @@ def _orchestrator() -> tuple[Tier1Orchestrator, StubStateManager, StubVPCService
     orch.efs_service = StubEFSService()
     orch.sg_service = StubSecurityGroupService()
     orch.ec2_service = StubEC2Service()
+    orch.iam_service = StubIAMService()
     state_manager = StubStateManager()
     orch.state_manager = state_manager
     return orch, state_manager, orch.vpc_service
@@ -225,3 +113,57 @@ def test_deploy_compresses_userdata_before_launch() -> None:
     decompressed = gzip.decompress(payload).decode()
     assert "#!/bin/bash" in decompressed
     assert len(payload) < len(decompressed.encode("utf-8"))
+
+
+def test_deploy_adds_https_port_to_reused_sg_when_https_enabled() -> None:
+    """Test that HTTPS port is added to reused security group when HTTPS is enabled."""
+    orch, _, _ = _orchestrator()
+    config = DeploymentConfig(
+        stack_name="stack",
+        tier="dev",
+        enable_https=True,
+        security_group_id="sg-existing",
+    )
+
+    orch.deploy(config)
+
+    assert orch.sg_service.https_port_added is True
+
+
+def test_deploy_skips_https_port_when_already_exists() -> None:
+    """Test that HTTPS port is not re-added if it already exists."""
+    orch, _, _ = _orchestrator()
+    # Simulate port 443 already existing
+    orch.sg_service.https_port_existed = True
+    config = DeploymentConfig(
+        stack_name="stack",
+        tier="dev",
+        enable_https=True,
+        security_group_id="sg-existing",
+    )
+
+    orch.deploy(config)
+
+    assert orch.sg_service.https_port_added is False
+
+
+def test_deploy_includes_https_port_in_new_sg() -> None:
+    """Test that HTTPS port is included when creating a new security group."""
+    orch, _, _ = _orchestrator()
+    config = DeploymentConfig(stack_name="stack", tier="dev", enable_https=True)
+
+    orch.deploy(config)
+
+    # Verify port 443 is in the ingress rules
+    assert any(rule.get("ToPort") == 443 for rule in orch.sg_service.last_ingress)
+
+
+def test_deploy_skips_https_port_when_disabled() -> None:
+    """Test that HTTPS port is not added when HTTPS is disabled."""
+    orch, _, _ = _orchestrator()
+    config = DeploymentConfig(stack_name="stack", tier="dev", enable_https=False)
+
+    orch.deploy(config)
+
+    # Verify port 443 is NOT in the ingress rules
+    assert not any(rule.get("ToPort") == 443 for rule in orch.sg_service.last_ingress)

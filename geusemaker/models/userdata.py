@@ -12,6 +12,10 @@ class UserDataConfig(BaseModel):
 
     efs_id: str = Field(..., description="EFS file system ID (e.g., fs-12345678)")
     efs_dns: str = Field(..., description="EFS DNS name (e.g., fs-12345678.efs.us-east-1.amazonaws.com)")
+    efs_mount_target_ip: str | None = Field(
+        default=None,
+        description="EFS mount target IP address for the selected AZ (bypasses DNS/DescribeMountTargets on-instance).",
+    )
     tier: Literal["dev", "automation", "gpu"] = Field(..., description="Deployment tier affecting configuration")
     stack_name: str = Field(..., description="Stack name for resource tagging")
     region: str = Field(..., description="AWS region (e.g., us-east-1)")
@@ -36,4 +40,16 @@ class UserDataConfig(BaseModel):
     runtime_bundle_filename: str = Field(
         default="runtime-bundle.tar.gz",
         description="Filename used when unpacking the runtime bundle on the instance.",
+    )
+    enable_https: bool = Field(
+        default=True,
+        description="Enable HTTPS/TLS for Tier 1 deployments with self-signed certificates.",
+    )
+    public_ip: str | None = Field(
+        default=None,
+        description="Public IP address for certificate CN (Tier 1 HTTPS only, auto-detected if not provided).",
+    )
+    preload_models: bool = Field(
+        default=True,
+        description="Preload Ollama models after deployment (runs in background, non-blocking). Default: true.",
     )

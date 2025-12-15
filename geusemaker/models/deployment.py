@@ -51,6 +51,10 @@ class DeploymentConfig(BaseModel):
         default="base",
         description="Deep Learning AMI type. 'base' recommended for general use.",
     )
+    ami_id: str | None = Field(
+        default=None,
+        description="Custom AMI ID to use instead of automatic AMI selection. Overrides os_type, architecture, and ami_type.",
+    )
 
     # Networking (None = auto-discover or create)
     vpc_id: str | None = None
@@ -59,6 +63,10 @@ class DeploymentConfig(BaseModel):
     private_subnet_ids: list[str] | None = None
     storage_subnet_id: str | None = None
     security_group_id: str | None = None
+    efs_id: str | None = Field(
+        default=None,
+        description="Existing EFS filesystem ID to reuse. If None, a new EFS filesystem will be created.",
+    )
     keypair_name: str | None = None
     attach_internet_gateway: bool = Field(
         default=False,
@@ -78,6 +86,28 @@ class DeploymentConfig(BaseModel):
     # Optional features
     enable_alb: bool = Field(default=False)
     enable_cdn: bool = Field(default=False)
+
+    # HTTPS/TLS configuration
+    enable_https: bool = Field(
+        default=True,
+        description="Enable HTTPS for the deployment. Tier 1 uses self-signed certs, Tier 2/3 require ACM certificates.",
+    )
+    tier1_use_self_signed: bool = Field(
+        default=True,
+        description="Use self-signed certificates for Tier 1 dev deployments (via NGINX reverse proxy).",
+    )
+    alb_certificate_arn: str | None = Field(
+        default=None,
+        description="ACM certificate ARN for ALB HTTPS listener (required for Tier 2/3 HTTPS).",
+    )
+    cloudfront_certificate_arn: str | None = Field(
+        default=None,
+        description="ACM certificate ARN for CloudFront (Tier 3 only, must be in us-east-1 region).",
+    )
+    force_https_redirect: bool = Field(
+        default=True,
+        description="Redirect HTTP traffic to HTTPS (applies to ALB and CloudFront).",
+    )
 
     # Rollback settings
     auto_rollback_on_failure: bool = Field(default=True)
@@ -138,8 +168,15 @@ class DeploymentState(BaseModel):
     security_group_id: str
     efs_id: str
     efs_mount_target_id: str
+    efs_mount_target_ip: str | None = None
     instance_id: str
     keypair_name: str
+
+    # IAM resources (required for EFS mount with IAM authentication)
+    iam_role_name: str | None = None
+    iam_role_arn: str | None = None
+    iam_instance_profile_name: str | None = None
+    iam_instance_profile_arn: str | None = None
 
     # Optional resources (Tier 2/3)
     alb_arn: str | None = None
@@ -153,6 +190,21 @@ class DeploymentState(BaseModel):
     public_ip: str | None = None
     private_ip: str
     n8n_url: str
+
+    # HTTPS/TLS state
+    https_enabled: bool = Field(default=False)
+    https_endpoint: str | None = Field(
+        default=None,
+        description="Primary HTTPS endpoint URL (CloudFront > ALB > EC2 public IP).",
+    )
+    certificate_arn: str | None = Field(
+        default=None,
+        description="ACM certificate ARN used for HTTPS (ALB or CloudFront).",
+    )
+    nginx_proxy_enabled: bool = Field(
+        default=False,
+        description="Whether NGINX reverse proxy is enabled (Tier 1 self-signed cert only).",
+    )
 
     rollback_history: list[RollbackRecord] = Field(default_factory=list)
     last_healthy_state: dict[str, Any] | None = None

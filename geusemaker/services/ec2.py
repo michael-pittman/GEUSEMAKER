@@ -13,25 +13,66 @@ from geusemaker.services.base import BaseService
 class EC2Service(BaseService):
     """Manage EC2 instance lifecycle."""
 
-    # Region-aware AMI mappings for Amazon Linux 2023 base images
-    # Format: {region: {architecture: ami_id}}
-    AL2023_BASE_AMIS: dict[str, dict[str, str]] = {
+    # Deep Learning Base AMI mappings with Single CUDA (unified for CPU and GPU instances)
+    # Format: {region: {os_type: {architecture: ami_id}}}
+    #
+    # These AMIs are "Deep Learning Base AMI with Single CUDA" which work on both
+    # CPU and GPU instances - GPU drivers (CUDA, cuDNN, etc.) are present but
+    # dormant on CPU-only instances (t3, c5, m5, etc.) and activate automatically
+    # on GPU instances (p3, p4, p5, g4, g5, g6, etc.).
+    #
+    # REGIONAL STRATEGY:
+    # - Only us-east-1 is optimized with hardcoded AMI IDs for faster deployments
+    # - Other regions use pattern-based search (fallback in get_latest_dlami)
+    # - This avoids maintaining stale AMI IDs across all regions
+    # - All regions are fully supported via the automatic pattern search
+    #
+    # BENEFITS OF HARDCODED IDS (us-east-1 only):
+    # - Skip describe_images API call (faster)
+    # - Guaranteed availability (validated)
+    # - Newer images: Dec 2025 AMIs vs older Nov 2025 versions
+    # - Smaller size: 30 GB vs 40 GB (saves disk space and launch time)
+    DLAMI_BASE: dict[str, dict[str, dict[str, str]]] = {
         "us-east-1": {
-            "x86_64": "ami-0941ba2cd9ee2998a",
-            "arm64": "ami-08742254cf19c5488",
+            "amazon-linux-2023": {
+                "x86_64": "ami-00a3a6192ba06e9ae",  # Deep Learning Base AMI with Single CUDA (30 GB)
+                "arm64": "ami-0f7f69448b947f02e",  # Deep Learning Base AMI with Single CUDA (30 GB)
+            },
+            "ubuntu-22.04": {
+                "x86_64": "ami-0193ca8306cf64925",  # Deep Learning Base AMI with Single CUDA (30 GB)
+                "arm64": "ami-08f9f6bb4d8be1db8",  # Deep Learning Base AMI with Single CUDA (30 GB)
+            },
         },
-        "us-west-2": {
-            "x86_64": "ami-019056869a13971ff",
-            "arm64": "ami-0c5b116eea276f6f1",
-        },
-        "eu-west-1": {
-            "x86_64": "ami-0a80bf774329b5816",
-            "arm64": "ami-0e69d8ca2344ffc9d",
-        },
-        "ap-southeast-1": {
-            "x86_64": "ami-05b1f2b5642f2ad75",
-            "arm64": "ami-0895a44228ddd0f3d",
-        },
+    }
+
+    # GPU instance type specifications for LLM inference workloads
+    # Format: {instance_type: {specs}}
+    # Includes GPU model, memory, vCPU, and system memory for cost/performance planning
+    GPU_INSTANCE_TYPES: dict[str, dict[str, str | int]] = {
+        # G4dn instances (NVIDIA T4 Tensor Core GPUs) - Best for cost-effective inference
+        "g4dn.xlarge": {"gpu": "T4", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 4, "memory_gb": 16},
+        "g4dn.2xlarge": {"gpu": "T4", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 8, "memory_gb": 32},
+        "g4dn.4xlarge": {"gpu": "T4", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 16, "memory_gb": 64},
+        "g4dn.8xlarge": {"gpu": "T4", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 32, "memory_gb": 128},
+        "g4dn.12xlarge": {"gpu": "T4", "gpu_count": 4, "gpu_memory_gb": 64, "vcpu": 48, "memory_gb": 192},
+        "g4dn.16xlarge": {"gpu": "T4", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 64, "memory_gb": 256},
+        # G5 instances (NVIDIA A10G Tensor Core GPUs) - Best for large models (24GB VRAM)
+        "g5.xlarge": {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 4, "memory_gb": 16},
+        "g5.2xlarge": {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 8, "memory_gb": 32},
+        "g5.4xlarge": {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 16, "memory_gb": 64},
+        "g5.8xlarge": {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 32, "memory_gb": 128},
+        "g5.12xlarge": {"gpu": "A10G", "gpu_count": 4, "gpu_memory_gb": 96, "vcpu": 48, "memory_gb": 192},
+        "g5.16xlarge": {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 64, "memory_gb": 256},
+        "g5.24xlarge": {"gpu": "A10G", "gpu_count": 4, "gpu_memory_gb": 96, "vcpu": 96, "memory_gb": 384},
+        "g5.48xlarge": {"gpu": "A10G", "gpu_count": 8, "gpu_memory_gb": 192, "vcpu": 192, "memory_gb": 768},
+        # P3 instances (NVIDIA V100 Tensor Core GPUs) - Training-optimized
+        "p3.2xlarge": {"gpu": "V100", "gpu_count": 1, "gpu_memory_gb": 16, "vcpu": 8, "memory_gb": 61},
+        "p3.8xlarge": {"gpu": "V100", "gpu_count": 4, "gpu_memory_gb": 64, "vcpu": 32, "memory_gb": 244},
+        "p3.16xlarge": {"gpu": "V100", "gpu_count": 8, "gpu_memory_gb": 128, "vcpu": 64, "memory_gb": 488},
+        # P4 instances (NVIDIA A100 40GB GPUs) - High-performance training
+        "p4d.24xlarge": {"gpu": "A100", "gpu_count": 8, "gpu_memory_gb": 320, "vcpu": 96, "memory_gb": 1152},
+        # P5 instances (NVIDIA H100 80GB GPUs) - Latest generation
+        "p5.48xlarge": {"gpu": "H100", "gpu_count": 8, "gpu_memory_gb": 640, "vcpu": 192, "memory_gb": 2048},
     }
 
     def __init__(self, client_factory: AWSClientFactory, region: str = "us-east-1"):
@@ -99,13 +140,15 @@ class EC2Service(BaseService):
         """
 
         def _call() -> str:
-            # Try direct AMI ID lookup first for Amazon Linux 2023 base images
-            if os_type == "amazon-linux-2023" and ami_type == "base":
-                region_amis = self.AL2023_BASE_AMIS.get(self.region)
+            # Try direct AMI ID lookup for base AMI type
+            if ami_type == "base":
+                region_amis = self.DLAMI_BASE.get(self.region)
                 if region_amis:
-                    ami_id = region_amis.get(architecture)
-                    if ami_id and self.validate_ami(ami_id):
-                        return ami_id
+                    os_amis = region_amis.get(os_type)
+                    if os_amis:
+                        ami_id = os_amis.get(architecture)
+                        if ami_id and self.validate_ami(ami_id):
+                            return ami_id
 
             # Fallback to pattern-based search
             # NOTE: All Deep Learning AMIs include GPU support (drivers, CUDA, etc.)
@@ -227,6 +270,20 @@ class EC2Service(BaseService):
 
         self._safe_call(_call)
 
+    def get_root_device_name(self, ami_id: str) -> str:
+        """Return the root device name for an AMI (e.g., /dev/xvda)."""
+
+        def _call() -> str:
+            resp = self._ec2.describe_images(ImageIds=[ami_id]).get("Images", [])
+            if not resp:
+                raise RuntimeError(f"AMI {ami_id} not found")
+            root = resp[0].get("RootDeviceName")
+            if not root:
+                raise RuntimeError(f"AMI {ami_id} missing RootDeviceName")
+            return root  # type: ignore[no-any-return]
+
+        return self._safe_call(_call)
+
     @staticmethod
     def _is_gpu_instance_type(instance_type: str | None) -> bool:
         """Detect if an EC2 instance type has GPU support.
@@ -253,18 +310,78 @@ class EC2Service(BaseService):
         gpu_families = {
             "p3",
             "p4",
+            "p4d",
+            "p4de",
             "p5",
             "p5e",
             "p6",  # Training-optimized (V100, A100, H100, B200)
             "g3",
+            "g3s",
             "g4",
+            "g4dn",
+            "g4ad",
             "g5",
-            "g6",  # Graphics/inference (M60, T4, A10G, L4)
-            "g6e",
-            "g5g",  # ARM64 Graviton with GPU
+            "g5g",
+            "g6",
+            "g6e",  # Graphics/inference (M60, T4, A10G, L4)
         }
 
         return family in gpu_families
+
+    @classmethod
+    def get_gpu_instance_specs(cls, instance_type: str) -> dict[str, str | int] | None:
+        """Get GPU specifications for a given instance type.
+
+        Args:
+            instance_type: EC2 instance type (e.g., "g5.xlarge")
+
+        Returns:
+            Dictionary with GPU specs (gpu, gpu_count, gpu_memory_gb, vcpu, memory_gb)
+            or None if instance type is not in the GPU_INSTANCE_TYPES mapping
+
+        Example:
+            >>> EC2Service.get_gpu_instance_specs("g5.xlarge")
+            {"gpu": "A10G", "gpu_count": 1, "gpu_memory_gb": 24, "vcpu": 4, "memory_gb": 16}
+
+        """
+        return cls.GPU_INSTANCE_TYPES.get(instance_type)
+
+    @classmethod
+    def validate_gpu_instance_type(cls, instance_type: str) -> tuple[bool, str | None]:
+        """Validate if an instance type is supported for GPU workloads.
+
+        Checks if the instance type:
+        1. Has GPU hardware (detected by family name)
+        2. Is in the GPU_INSTANCE_TYPES mapping with known specifications
+
+        Args:
+            instance_type: EC2 instance type to validate
+
+        Returns:
+            Tuple of (is_valid, error_message)
+            - (True, None) if instance type is fully supported
+            - (False, error_message) if instance type is not supported
+
+        Example:
+            >>> EC2Service.validate_gpu_instance_type("g5.xlarge")
+            (True, None)
+            >>> EC2Service.validate_gpu_instance_type("t3.medium")
+            (False, "Instance type 't3.medium' does not have GPU support")
+
+        """
+        # Check if instance type has GPU hardware
+        if not cls._is_gpu_instance_type(instance_type):
+            return False, f"Instance type '{instance_type}' does not have GPU support"
+
+        # Check if we have specifications for this GPU instance type
+        if instance_type not in cls.GPU_INSTANCE_TYPES:
+            return (
+                False,
+                f"GPU instance type '{instance_type}' is not in the supported list. "
+                f"Supported types: {', '.join(sorted(cls.GPU_INSTANCE_TYPES.keys()))}",
+            )
+
+        return True, None
 
     def _dlami_name_patterns(
         self,

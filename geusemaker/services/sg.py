@@ -107,5 +107,43 @@ class SecurityGroupService(BaseService):
 
         self._safe_call(_call)
 
+    def ensure_https_port(self, group_id: str) -> bool:
+        """
+        Ensure HTTPS port (443) is open in a security group.
+
+        Returns:
+            True if port was added, False if it already existed
+        """
+
+        def _call() -> bool:
+            # Get current security group rules
+            response = self._ec2.describe_security_groups(GroupIds=[group_id])
+            rules = response["SecurityGroups"][0]["IpPermissions"]
+
+            # Check if port 443 is already open
+            for rule in rules:
+                if (
+                    rule.get("IpProtocol") == "tcp"
+                    and rule.get("FromPort") == 443
+                    and rule.get("ToPort") == 443
+                ):
+                    return False  # Port already open
+
+            # Port 443 not found, add it
+            self._ec2.authorize_security_group_ingress(
+                GroupId=group_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 443,
+                        "ToPort": 443,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+                    },
+                ],
+            )
+            return True  # Port was added
+
+        return self._safe_call(_call)
+
 
 __all__ = ["SecurityGroupService"]

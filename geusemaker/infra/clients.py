@@ -17,8 +17,11 @@ LOGGER = logging.getLogger(__name__)
 class AWSClientFactory:
     """Factory for creating authenticated AWS clients."""
 
+    _default_profile: str | None = None
+
     def __init__(self, profile_name: str | None = None):
-        self._session = Session(profile_name=profile_name)
+        resolved_profile = profile_name if profile_name is not None else self._default_profile
+        self._session = Session(profile_name=resolved_profile)
         self._clients: dict[str, Any] = {}
 
     def get_client(self, service: str, region: str = "us-east-1") -> Any:
@@ -38,6 +41,11 @@ class AWSClientFactory:
     def clear_cache(self) -> None:
         """Clear cached clients (useful for testing)."""
         self._clients.clear()
+
+    @classmethod
+    def set_default_profile(cls, profile_name: str | None) -> None:
+        """Set a process-wide default AWS profile for new factories."""
+        cls._default_profile = profile_name
 
 
 __all__ = ["AWSClientFactory"]

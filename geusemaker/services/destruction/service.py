@@ -15,8 +15,11 @@ from geusemaker.models.destruction import (
     DestructionResult,
     PreservedResource,
 )
+from geusemaker.services.alb import ALBService
+from geusemaker.services.cloudfront import CloudFrontService
 from geusemaker.services.ec2 import EC2Service
 from geusemaker.services.efs import EFSService
+from geusemaker.services.iam import IAMService
 from geusemaker.services.sg import SecurityGroupService
 
 
@@ -43,12 +46,17 @@ class DestructionService:
         self.sg_service = SecurityGroupService(self.client_factory, region=region)
         if ec2_client:
             self.sg_service._ec2 = ec2_client  # type: ignore[attr-defined]
+        self.iam = IAMService(self.client_factory, region=region)
+        self.alb = ALBService(self.client_factory, region=region)
+        self.cloudfront = CloudFrontService(self.client_factory, region=region)
         self._ec2_raw = ec2_client or self.client_factory.get_client("ec2", region)
+        self._elbv2_raw = self.client_factory.get_client("elbv2", region)
 
     def destroy(
         self,
         state: DeploymentState,
         dry_run: bool = False,
+        preserve_efs: bool = False,
         progress_callback: Callable[[str], None] | None = None,
     ) -> DestructionResult:
         """Delete created resources and archive state.
@@ -56,6 +64,7 @@ class DestructionService:
         Args:
             state: Deployment state to destroy
             dry_run: If True, preview deletion without making changes
+            preserve_efs: If True, preserve EFS filesystem and mount targets
             progress_callback: Optional callback to report progress (called with status messages)
         """
         start = monotonic()
@@ -67,6 +76,99 @@ class DestructionService:
         def _progress(msg: str) -> None:
             if progress_callback:
                 progress_callback(msg)
+
+        # CloudFront cleanup (must be before ALB deletion - CloudFront depends on ALB as origin)
+        try:
+            if state.cloudfront_id:
+                if provenance.get("cloudfront") == "reused":
+                    _progress("Preserving reused CloudFront distribution")
+                    preserved.append(
+                        PreservedResource(
+                            resource_type="cloudfront",
+                            resource_id=state.cloudfront_id,
+                            reason="reused",
+                        ),
+                    )
+                else:
+                    _progress(f"Disabling CloudFront distribution {state.cloudfront_id}")
+                    if not dry_run:
+                        try:
+                            # Get current distribution config and ETag
+                            dist_resp = self.cloudfront.get_distribution(state.cloudfront_id)
+                            etag = dist_resp["ETag"]
+
+                            # Disable the distribution
+                            disable_resp = self.cloudfront.disable_distribution(state.cloudfront_id, etag)
+                            new_etag = disable_resp["ETag"]
+
+                            _progress("Waiting for CloudFront distribution to deploy (this may take several minutes)")
+                            self.cloudfront.wait_for_deployed(
+                                distribution_id=state.cloudfront_id,
+                                max_attempts=60,  # 30 minutes max
+                                delay=30,
+                            )
+
+                            # Delete the distribution
+                            _progress(f"Deleting CloudFront distribution {state.cloudfront_id}")
+                            self.cloudfront.delete_distribution(state.cloudfront_id, new_etag)
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(f"CloudFront deletion failed: {exc}")
+                    deleted.append(self._deleted("cloudfront", state.cloudfront_id))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"CloudFront cleanup failed: {exc}")
+
+        # ALB cleanup (must be before EC2 instance termination)
+        try:
+            if state.target_group_arn:
+                if provenance.get("target_group") == "reused":
+                    _progress("Preserving reused target group")
+                    preserved.append(
+                        PreservedResource(
+                            resource_type="target_group",
+                            resource_id=state.target_group_arn,
+                            reason="reused",
+                        ),
+                    )
+                else:
+                    # Deregister instances from target group first
+                    if state.instance_id:
+                        _progress(f"Deregistering instance {state.instance_id} from target group")
+                        if not dry_run:
+                            try:
+                                self._elbv2_raw.deregister_targets(
+                                    TargetGroupArn=state.target_group_arn,
+                                    Targets=[{"Id": state.instance_id}],
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                errors.append(f"Target deregistration failed: {exc}")
+
+                    _progress("Deleting target group")
+                    if not dry_run:
+                        try:
+                            self._elbv2_raw.delete_target_group(TargetGroupArn=state.target_group_arn)
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(f"Target group deletion failed: {exc}")
+                    deleted.append(self._deleted("target_group", state.target_group_arn))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Target group cleanup failed: {exc}")
+
+        try:
+            if state.alb_arn:
+                if provenance.get("alb") == "reused":
+                    _progress("Preserving reused ALB")
+                    preserved.append(
+                        PreservedResource(resource_type="alb", resource_id=state.alb_arn, reason="reused"),
+                    )
+                else:
+                    _progress("Deleting Application Load Balancer")
+                    if not dry_run:
+                        try:
+                            self._elbv2_raw.delete_load_balancer(LoadBalancerArn=state.alb_arn)
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(f"ALB deletion failed: {exc}")
+                    deleted.append(self._deleted("alb", state.alb_arn))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"ALB cleanup failed: {exc}")
 
         try:
             if state.instance_id:
@@ -85,16 +187,59 @@ class DestructionService:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Instance termination failed: {exc}")
 
+        # IAM cleanup: instance profile and role (must be after EC2 instance termination)
+        try:
+            if state.iam_instance_profile_name:
+                if provenance.get("iam_instance_profile") == "reused":
+                    _progress("Preserving reused IAM instance profile")
+                    preserved.append(
+                        PreservedResource(
+                            resource_type="iam_instance_profile",
+                            resource_id=state.iam_instance_profile_name,
+                            reason="reused",
+                        ),
+                    )
+                else:
+                    _progress(f"Deleting IAM instance profile {state.iam_instance_profile_name}")
+                    if not dry_run:
+                        self.iam.delete_instance_profile(
+                            state.iam_instance_profile_name,
+                            state.iam_role_name,
+                        )
+                    deleted.append(self._deleted("iam_instance_profile", state.iam_instance_profile_name))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"IAM instance profile deletion failed: {exc}")
+
+        try:
+            if state.iam_role_name:
+                if provenance.get("iam_role") == "reused":
+                    _progress("Preserving reused IAM role")
+                    preserved.append(
+                        PreservedResource(
+                            resource_type="iam_role",
+                            resource_id=state.iam_role_name,
+                            reason="reused",
+                        ),
+                    )
+                else:
+                    _progress(f"Deleting IAM role {state.iam_role_name}")
+                    if not dry_run:
+                        self.iam.delete_role(state.iam_role_name)
+                    deleted.append(self._deleted("iam_role", state.iam_role_name))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"IAM role deletion failed: {exc}")
+
         try:
             if state.efs_id:
-                if provenance.get("efs") == "reused":
-                    _progress("Preserving reused EFS mount targets")
+                if provenance.get("efs") == "reused" or preserve_efs:
+                    reason = "preserved by --preserve-efs flag" if preserve_efs else "reused"
+                    _progress(f"Preserving EFS mount targets ({reason})")
                     if state.efs_mount_target_id:
                         preserved.append(
                             PreservedResource(
                                 resource_type="efs_mount_target",
                                 resource_id=state.efs_mount_target_id,
-                                reason="reused",
+                                reason=reason,
                             ),
                         )
                 else:
@@ -114,9 +259,10 @@ class DestructionService:
 
         try:
             if state.efs_id:
-                if provenance.get("efs") == "reused":
-                    _progress("Preserving reused EFS filesystem")
-                    preserved.append(PreservedResource(resource_type="efs", resource_id=state.efs_id, reason="reused"))
+                if provenance.get("efs") == "reused" or preserve_efs:
+                    reason = "preserved by --preserve-efs flag" if preserve_efs else "reused"
+                    _progress(f"Preserving EFS filesystem ({reason})")
+                    preserved.append(PreservedResource(resource_type="efs", resource_id=state.efs_id, reason=reason))
                 else:
                     _progress("Deleting EFS filesystem")
                     if not dry_run:

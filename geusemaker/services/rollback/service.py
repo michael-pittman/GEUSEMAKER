@@ -1,8 +1,7 @@
-"""Rollback service."""
+"""Rollback service for state/version reverts (not resource cleanup)."""
 
 from __future__ import annotations
 
-import asyncio
 from time import monotonic
 
 from geusemaker.infra import AWSClientFactory, StateManager
@@ -12,7 +11,7 @@ from geusemaker.services.update import ContainerUpdater, InstanceUpdater
 
 
 class RollbackService:
-    """Rollback a deployment to a previous snapshot."""
+    """Rollback a deployment to a previous saved snapshot (state versioning, not resource deletion)."""
 
     def __init__(
         self,
@@ -49,7 +48,7 @@ class RollbackService:
         history.insert(0, current_snapshot)
         state.previous_states = history[:5]
         state.status = "rolling_back"
-        asyncio.run(self.state_manager.save_deployment(state))
+        self.state_manager.save_deployment_sync(state)
 
         changes: list[str] = []
 
@@ -77,7 +76,7 @@ class RollbackService:
                 rolled_back_changes=changes,
             ),
         )
-        asyncio.run(self.state_manager.save_deployment(state))
+        self.state_manager.save_deployment_sync(state)
 
         duration = monotonic() - start
         return RollbackResult(

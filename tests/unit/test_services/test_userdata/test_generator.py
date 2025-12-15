@@ -59,11 +59,14 @@ def test_docker_installation_commands_present(base_config: UserDataConfig) -> No
 
 
 def test_efs_mount_command_with_correct_id(base_config: UserDataConfig) -> None:
-    """Test EFS mount command uses correct EFS ID."""
+    """Test EFS mount command uses correct EFS ID with IAM authentication."""
     gen = UserDataGenerator()
     script = gen.generate(base_config)
 
-    assert "mount -t efs -o tls fs-12345678:/ /mnt/efs" in script
+    # Verify EFS mount with IAM authentication
+    assert 'MOUNT_OPTS="tls,iam,addr=${EFS_MOUNT_ADDR}"' in script
+    assert "mount -t efs -o" in script
+    assert "fs-12345678:/ /mnt/efs" in script
     assert "amazon-efs-utils" in script
     assert "mkdir -p /mnt/efs" in script
     assert "/etc/fstab" in script
@@ -263,7 +266,8 @@ def test_efs_data_directories_created(base_config: UserDataConfig) -> None:
     assert "mkdir -p /mnt/efs/ollama" in script
     assert "mkdir -p /mnt/efs/qdrant" in script
     assert "mkdir -p /mnt/efs/postgres" in script
-    assert "mkdir -p /mnt/efs/docker" in script
+    # Docker stays on local EBS - NOT on EFS
+    assert "mkdir -p /mnt/efs/docker" not in script
 
 
 def test_volume_mounts_configured(base_config: UserDataConfig) -> None:
@@ -296,13 +300,22 @@ def test_efs_runs_before_docker(base_config: UserDataConfig) -> None:
     assert efs_index < docker_index
 
 
-def test_docker_data_root_symlinked_to_efs(base_config: UserDataConfig) -> None:
-    """Docker data should be stored on EFS."""
+def test_docker_data_root_stays_on_local_ebs(base_config: UserDataConfig) -> None:
+    """Docker data should stay on local EBS, NOT on EFS.
+
+    EFS doesn't support all filesystem features needed by Docker's overlay2 driver.
+    Application data uses EFS via bind mounts defined in docker-compose.yml.
+    """
     gen = UserDataGenerator()
     script = gen.generate(base_config)
 
-    assert "/mnt/efs/docker" in script
-    assert 'ln -s "$efs_root" "$data_root"' in script
+    # Verify Docker stays on local EBS (no EFS symlink)
+    # Note: Comment-only lines are stripped by _trim_script() to reduce UserData size
+    assert "/mnt/efs/docker" not in script
+
+    # Verify application data uses EFS bind mounts
+    assert "/mnt/efs/n8n:/home/node/.n8n" in script
+    assert "/mnt/efs/ollama:/root/.ollama" in script
 
 
 def test_services_pre_pull_images(base_config: UserDataConfig) -> None:
@@ -320,5 +333,47 @@ def test_runtime_bundle_block_included_when_enabled(base_config: UserDataConfig)
     script = gen.generate(config)
 
     assert "runtime-bundle.tar.gz" in script
-    assert "base64 -d > \"$RUNTIME_BUNDLE_FILE\"" in script
-    assert "tar -xzf \"$RUNTIME_BUNDLE_FILE\"" in script
+    assert 'base64 -d > "$RUNTIME_BUNDLE_FILE"' in script
+    assert 'tar -xzf "$RUNTIME_BUNDLE_FILE"' in script
+
+
+def test_container_startup_retry_logic(base_config: UserDataConfig) -> None:
+    """Test container startup includes retry logic instead of fixed sleep."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    # Verify retry functions are defined
+    assert "wait_for_containers_running()" in script
+    assert "verify_docker_network()" in script
+
+    # Verify retry logic checks all expected containers
+    assert '"n8n" "ollama" "qdrant" "crawl4ai" "postgres"' in script
+
+    # Verify exponential backoff is implemented
+    assert "max_attempts=" in script
+    assert "delay=" in script
+
+    # Verify Docker network hostname resolution checks
+    assert "getent hosts postgres" in script
+    assert "getent hosts ollama" in script
+
+    # Verify old fixed sleep is removed
+    assert "sleep 10" not in script or script.count("sleep") > 1  # If sleep 10 exists, should have other sleeps too
+
+    # Verify error handling on failure
+    assert "Container startup failed" in script
+    assert "network verification failed" in script
+
+
+def test_docker_network_diagnostics_on_failure(base_config: UserDataConfig) -> None:
+    """Test Docker network diagnostics are collected on failure."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    # Verify network diagnostics commands
+    assert "docker network ls" in script
+    assert "docker network inspect" in script
+
+    # Verify error messages are informative
+    assert "Docker network hostname resolution failed" in script
+    assert "DNS resolution not ready" in script

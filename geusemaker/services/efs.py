@@ -81,6 +81,23 @@ class EFSService(BaseService):
 
         return self._safe_call(_call)
 
+    def get_mount_target_ip(self, mount_target_id: str) -> str:
+        """Return the IP address of a mount target."""
+
+        def _call() -> str:
+            resp = self._efs.describe_mount_targets(MountTargetId=mount_target_id)
+            targets = resp.get("MountTargets", [])
+            if not targets:
+                raise RuntimeError(f"EFS mount target {mount_target_id} not found")
+
+            ip_address = targets[0].get("IpAddress")
+            if not ip_address:
+                raise RuntimeError(f"EFS mount target {mount_target_id} has no IP address yet")
+
+            return ip_address  # type: ignore[no-any-return]
+
+        return self._safe_call(_call)
+
     def wait_for_mount_target_available(self, mount_target_id: str, max_attempts: int = 60, delay: int = 5) -> None:
         """Wait for EFS mount target to reach 'available' state.
 

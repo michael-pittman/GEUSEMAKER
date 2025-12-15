@@ -36,6 +36,14 @@ async def check_qdrant(client: HealthCheckClient, host: str, port: int = 6333) -
     )
 
 
+async def check_qdrant_ui(client: HealthCheckClient, host: str, port: int = 6333) -> HealthCheckResult:
+    """Check Qdrant built-in Web UI (dashboard) health."""
+    return await client.check_http(
+        url=_http_config("qdrant-ui", host, port, "/dashboard").endpoint,
+        service_name="qdrant-ui",
+    )
+
+
 async def check_crawl4ai(client: HealthCheckClient, host: str, port: int = 11235) -> HealthCheckResult:
     return await client.check_http(
         url=_http_config("crawl4ai", host, port, "/health").endpoint,
@@ -57,6 +65,7 @@ def _default_configs(host: str) -> Iterable[HealthCheckConfig]:
         _http_config("n8n", host, 5678, "/healthz"),
         _http_config("ollama", host, 11434, "/api/version"),
         _http_config("qdrant", host, 6333, "/health"),
+        _http_config("qdrant-ui", host, 6333, "/dashboard"),
         _http_config("crawl4ai", host, 11235, "/health"),
     ]
 
@@ -66,6 +75,7 @@ __all__ = [
     "check_n8n",
     "check_ollama",
     "check_qdrant",
+    "check_qdrant_ui",
     "check_crawl4ai",
     "check_postgres",
 ]

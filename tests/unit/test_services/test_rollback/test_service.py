@@ -17,6 +17,9 @@ class StubStateManager:
     async def save_deployment(self, state: DeploymentState) -> None:
         self.saved_state = state
 
+    def save_deployment_sync(self, state: DeploymentState) -> None:
+        self.saved_state = state
+
     async def load_deployment(self, stack_name: str) -> DeploymentState | None:  # noqa: ARG002
         return self.state
 

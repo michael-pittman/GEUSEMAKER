@@ -32,6 +32,7 @@ class SpotAnalysis(BaseModel):
     price_stability_score: float
     on_demand_price: Decimal
     savings_percentage: float
+    placement_scores_by_az: dict[str, float] = Field(default_factory=dict)
     analysis_timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

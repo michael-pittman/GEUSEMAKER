@@ -11,6 +11,7 @@ from geusemaker.services.health.services import (
     check_ollama,
     check_postgres,
     check_qdrant,
+    check_qdrant_ui,
 )
 
 
@@ -25,7 +26,7 @@ def _mock_client(status: int = 200) -> HealthCheckClient:
 async def test_service_specific_checks_use_expected_paths() -> None:
     client = _mock_client()
     host = "1.2.3.4"
-    for checker in (check_n8n, check_ollama, check_qdrant, check_crawl4ai):
+    for checker in (check_n8n, check_ollama, check_qdrant, check_qdrant_ui, check_crawl4ai):
         result = await checker(client, host=host)
         assert result.healthy is True
         assert host in result.endpoint
@@ -47,5 +48,5 @@ async def test_postgres_check_via_tcp(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_check_all_services_runs_parallel() -> None:
     client = _mock_client()
     results = await check_all_services(client, host="localhost")
-    assert len(results) == 4
+    assert len(results) == 5  # n8n, ollama, qdrant, qdrant-ui, crawl4ai
     assert all(res.healthy for res in results)

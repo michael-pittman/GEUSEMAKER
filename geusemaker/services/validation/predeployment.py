@@ -130,18 +130,42 @@ class PreDeploymentValidator(BaseService):
                 ),
             )
             evaluation_results = response.get("EvaluationResults", [])
-            denied = [
-                result["EvalActionName"]
-                for result in evaluation_results
-                if result.get("EvalDecision") not in {"allowed", "implicitDeny"}
-            ]
-            if denied:
+            if not evaluation_results:
                 return ValidationCheck(
                     check_name=check_name,
                     passed=False,
-                    message="Missing required permissions.",
-                    details=", ".join(denied),
-                    remediation="Add the missing IAM permissions for deployment actions.",
+                    message="Permission validation unavailable (no evaluation results returned).",
+                    remediation="Ensure iam:SimulatePrincipalPolicy is allowed or validate manually.",
+                    severity="warning",
+                )
+
+            denied_actions: list[str] = []
+            implicitly_denied: list[str] = []
+            for result in evaluation_results:
+                decision = str(result.get("EvalDecision", "")).lower()
+                action = result.get("EvalActionName", "unknown")
+                if decision == "allowed":
+                    continue
+                if decision == "implicitdeny":
+                    implicitly_denied.append(action)
+                    continue
+                denied_actions.append(action)
+
+            if denied_actions or implicitly_denied:
+                missing = denied_actions + implicitly_denied
+                decision_hint = ""
+                if denied_actions and implicitly_denied:
+                    decision_hint = f" (explicitly denied: {', '.join(denied_actions)}; implicit denies: {', '.join(implicitly_denied)})"
+                elif denied_actions:
+                    decision_hint = f" (explicitly denied: {', '.join(denied_actions)})"
+                elif implicitly_denied:
+                    decision_hint = f" (implicit denies: {', '.join(implicitly_denied)})"
+                return ValidationCheck(
+                    check_name=check_name,
+                    passed=False,
+                    message="Missing required permissions." + decision_hint,
+                    details=", ".join(missing),
+                    remediation="Grant the required IAM permissions for deployment actions.",
                     severity="error",
                 )
             return ValidationCheck(

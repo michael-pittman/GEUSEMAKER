@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import click
 from rich.panel import Panel
@@ -51,12 +52,61 @@ def info(stack_name: str, output: str, state_dir: str | None, host: str | None, 
 
     resolved_host = host or state.public_ip or state.private_ip
     display_host = resolved_host or "unknown"
-    endpoints = {
-        "n8n": f"http://{display_host}:5678",
-        "ollama": f"http://{display_host}:11434",
-        "qdrant": f"http://{display_host}:6333",
-        "crawl4ai": f"http://{display_host}:11235",
-    }
+    
+    # Build endpoints based on tier
+    if state.config.tier == "dev":
+        # Tier 1: HTTPS through Nginx proxy
+        protocol = "https"
+        base_url = f"{protocol}://{display_host}"
+        endpoints = {
+            "n8n": base_url,
+            "ollama": f"{base_url}/api/ollama/",
+            "qdrant": f"{base_url}/qdrant/",
+            "qdrant-ui": f"{base_url}/qdrant-ui/",
+            "crawl4ai": f"{base_url}/crawl4ai/",
+        }
+    elif state.config.tier == "automation":
+        # Tier 2: Use ALB DNS from n8n_url
+        if state.n8n_url:
+            parsed = urlparse(state.n8n_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            endpoints = {
+                "n8n": base_url,
+                "ollama": f"{base_url}/api/ollama/",
+                "qdrant": f"{base_url}/qdrant/",
+                "qdrant-ui": f"{base_url}/qdrant-ui/",
+                "crawl4ai": f"{base_url}/crawl4ai/",
+            }
+        else:
+            # Fallback to direct IP if n8n_url not set
+            endpoints = {
+                "n8n": f"http://{display_host}:5678",
+                "ollama": f"http://{display_host}:11434",
+                "qdrant": f"http://{display_host}:6333",
+                "qdrant-ui": f"http://{display_host}/qdrant-ui/",
+                "crawl4ai": f"http://{display_host}:11235",
+            }
+    else:  # Tier 3 (gpu)
+        # Tier 3: Use CloudFront domain from n8n_url
+        if state.n8n_url:
+            parsed = urlparse(state.n8n_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            endpoints = {
+                "n8n": base_url,
+                "ollama": f"{base_url}/api/ollama/",
+                "qdrant": f"{base_url}/qdrant/",
+                "qdrant-ui": f"{base_url}/qdrant-ui/",
+                "crawl4ai": f"{base_url}/crawl4ai/",
+            }
+        else:
+            # Fallback to direct IP if n8n_url not set
+            endpoints = {
+                "n8n": f"http://{display_host}:5678",
+                "ollama": f"http://{display_host}:11434",
+                "qdrant": f"http://{display_host}:6333",
+                "qdrant-ui": f"http://{display_host}/qdrant-ui/",
+                "crawl4ai": f"http://{display_host}:11235",
+            }
     ssh_info = {
         "user": "ec2-user",
         "key_pair": state.keypair_name,

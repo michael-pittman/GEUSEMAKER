@@ -1,0 +1,116 @@
+# ===================================
+# Ollama Model Preloading
+# ===================================
+# Runs in background after healthcheck completes
+# Non-blocking: deployment continues while models download
+
+{% if preload_models %}
+(
+    MODEL_PRELOAD_LOG="/var/log/geusemaker/model-preload.log"
+    mkdir -p "$(dirname "$MODEL_PRELOAD_LOG")"
+
+    log_message() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$MODEL_PRELOAD_LOG"
+    }
+
+    log_message "Starting Ollama model preloading..."
+
+    # Wait for Ollama service to be ready
+    log_message "Waiting for Ollama to become ready..."
+    max_attempts=60
+    attempt=0
+    while [ $attempt -lt $max_attempts ]; do
+        if curl -sf http://localhost:{{ ollama_port }}/api/tags >/dev/null 2>&1; then
+            log_message "Ollama is ready"
+            break
+        fi
+        attempt=$((attempt + 1))
+        if [ $attempt -eq $max_attempts ]; then
+            log_message "WARNING: Ollama did not become ready within expected time, skipping model preload"
+            exit 0
+        fi
+        sleep 5
+    done
+
+    # Pull base models for all deployments
+    log_message "Pulling lightweight LLM: qwen2.5:1.5b-instruct"
+    if ! docker exec ollama ollama pull qwen2.5:1.5b-instruct >> "$MODEL_PRELOAD_LOG" 2>&1; then
+        log_message "WARNING: Failed to pull qwen2.5:1.5b-instruct"
+    else
+        log_message "Successfully pulled qwen2.5:1.5b-instruct"
+    fi
+
+    # Pull embedding model with fallback options
+    log_message "Pulling embedding model: znbang/bge:small-en-v1.5"
+    EMBEDDING_MODEL=""
+    if docker exec ollama ollama pull znbang/bge:small-en-v1.5 >> "$MODEL_PRELOAD_LOG" 2>&1; then
+        log_message "Successfully pulled znbang/bge:small-en-v1.5"
+        EMBEDDING_MODEL="znbang/bge:small-en-v1.5"
+    else
+        log_message "WARNING: Failed to pull znbang/bge:small-en-v1.5, trying alternative: nomic-embed-text"
+        if docker exec ollama ollama pull nomic-embed-text >> "$MODEL_PRELOAD_LOG" 2>&1; then
+            log_message "Successfully pulled nomic-embed-text (fallback)"
+            EMBEDDING_MODEL="nomic-embed-text"
+        else
+            log_message "WARNING: Failed to pull embedding models. Embeddings may not be available."
+            log_message "You can manually pull an embedding model later: docker exec ollama ollama pull <model-name>"
+        fi
+    fi
+
+{% if tier == "gpu" %}
+    # Pull GPU-optimized models for GPU deployments
+    log_message "GPU deployment detected - pulling GPU-optimized models"
+
+    log_message "Pulling GPU model: qwen3-omni-30b-a3b:q4_k_s"
+    if ! docker exec ollama ollama pull qwen3-omni-30b-a3b:q4_k_s >> "$MODEL_PRELOAD_LOG" 2>&1; then
+        log_message "WARNING: Failed to pull qwen3-omni-30b-a3b:q4_k_s, trying fallback model"
+
+        log_message "Pulling fallback GPU model: qwen2.5-omni-7b"
+        if ! docker exec ollama ollama pull qwen2.5-omni-7b >> "$MODEL_PRELOAD_LOG" 2>&1; then
+            log_message "WARNING: Failed to pull fallback model qwen2.5-omni-7b"
+        else
+            log_message "Successfully pulled qwen2.5-omni-7b (fallback)"
+        fi
+    else
+        log_message "Successfully pulled qwen3-omni-30b-a3b:q4_k_s"
+    fi
+{% endif %}
+
+    log_message "Model preloading complete"
+    log_message ""
+    log_message "=== Usage Examples ==="
+    log_message ""
+    log_message "# Chat with lightweight LLM:"
+    log_message "curl http://localhost:{{ ollama_port }}/api/chat -d '{"
+    log_message '  "model": "qwen2.5:1.5b-instruct",'
+    log_message '  "messages": [{"role": "user", "content": "Hello!"}]'
+    log_message "}'"
+    log_message ""
+    log_message "# Generate embeddings (native Ollama support):"
+    if [ -n "$EMBEDDING_MODEL" ]; then
+        log_message "curl http://localhost:{{ ollama_port }}/api/embed -d '{"
+        log_message "  \"model\": \"$EMBEDDING_MODEL\","
+        log_message '  "input": ["Your text here"]'
+        log_message "}'"
+    else
+        log_message "# Embedding model not available. Pull one manually:"
+        log_message "# docker exec ollama ollama pull znbang/bge:small-en-v1.5"
+        log_message "# or: docker exec ollama ollama pull nomic-embed-text"
+    fi
+    log_message ""
+{% if tier == "gpu" %}
+    log_message "# GPU-accelerated multimodal model:"
+    log_message "curl http://localhost:{{ ollama_port }}/api/chat -d '{"
+    log_message '  "model": "qwen3-omni-30b-a3b:q4_k_s",'
+    log_message '  "messages": [{"role": "user", "content": "Analyze this image", "images": ["base64..."]}]'
+    log_message "}'"
+    log_message ""
+{% endif %}
+    log_message "View this log: cat $MODEL_PRELOAD_LOG"
+    log_message "List models: docker exec ollama ollama list"
+
+) &
+{% else %}
+# Model preloading disabled (preload_models=false)
+echo "Ollama model preloading skipped (preload_models=false)"
+{% endif %}

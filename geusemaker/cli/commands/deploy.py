@@ -106,6 +106,11 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
     help="Deep Learning AMI type (base, pytorch, tensorflow, multi-framework).",
 )
 @click.option(
+    "--ami-id",
+    default=None,
+    help="Custom AMI ID to use (e.g., ami-0123456789abcdef0). Overrides os-type, architecture, and ami-type.",
+)
+@click.option(
     "--use-spot/--no-spot",
     default=True,
     show_default=True,
@@ -195,6 +200,7 @@ def deploy(
     os_type: str,
     architecture: str,
     ami_type: str,
+    ami_id: str | None,
     use_spot: bool,
     budget: float | None,
     vpc_id: str | None,
@@ -234,6 +240,7 @@ def deploy(
         os_type=os_type.lower(),
         architecture=architecture.lower(),
         ami_type=ami_type.lower(),
+        ami_id=ami_id,
         use_spot=use_spot,
         budget_limit=Decimal(str(budget)) if budget is not None else None,
         vpc_id=vpc_id,
