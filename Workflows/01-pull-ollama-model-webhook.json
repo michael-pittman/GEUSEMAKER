@@ -14,24 +14,39 @@
       "typeVersion": 2.1,
       "position": [240, 300],
       "webhookId": "pull-ollama-model",
-      "notes": "API endpoint: POST /webhook/pull-model with body: {\"model_name\": \"model-name\"}"
+      "notes": "API endpoint: POST /webhook/pull-model with body: {\"model_name\": \"model-name\"}",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "conditions": {
-          "string": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.body.model_name }}",
-              "operation": "isNotEmpty"
+              "id": "model_name_check",
+              "leftValue": "={{ $json.body.model_name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": false
       },
       "id": "validate-input",
       "name": "Validate Input",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [460, 300]
+      "position": [460, 300],
+      "notes": "Validates that model_name is provided in the request body",
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
@@ -41,9 +56,14 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"name\": \"{{ $json.body.model_name }}\",\n  \"stream\": false\n}",
+        "jsonBody": "={{ {\n  \"name\": $json.body.model_name,\n  \"stream\": false\n} }}",
         "options": {
-          "timeout": 3600000
+          "timeout": 3600000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
         }
       },
       "id": "pull-model",
@@ -51,26 +71,35 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [680, 200],
-      "notes": "Pulls the specified model from Ollama registry. Large models may take several minutes."
+      "notes": "Pulls the specified model from Ollama registry with retry logic. Large models may take several minutes.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
         "method": "GET",
         "url": "http://ollama:11434/api/tags",
         "authentication": "none",
-        "options": {}
+        "options": {
+          "timeout": 30000
+        }
       },
       "id": "list-models",
       "name": "Verify Model Installed",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [900, 200],
-      "notes": "Lists all installed models to verify the pull was successful"
+      "notes": "Lists all installed models to verify the pull was successful",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"success\": true,\n  \"model_name\": \"{{ $('Pull Model from Ollama').item.json.name || $json.body.model_name }}\",\n  \"message\": \"Model pulled successfully\",\n  \"installed_models\": {{ $json.models.map(m => m.name).join(', ') }}\n}",
+        "responseBody": "={{ {\n  \"success\": true,\n  \"model_name\": $('Pull Model from Ollama').item.json.status === 'success' ? $json.body.model_name : $('Pull Model from Ollama').item.json.name || $json.body.model_name,\n  \"message\": \"Model pulled successfully\",\n  \"installed_models\": $json.models ? $json.models.map(m => m.name) : []\n} }}",
         "options": {
           "responseCode": 200
         }
@@ -79,12 +108,13 @@
       "name": "Success Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [1120, 200]
+      "position": [1120, 200],
+      "notes": "Returns success response with model details and list of installed models"
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"success\": false,\n  \"error\": \"Model name is required. Send POST request with body: {\\\"model_name\\\": \\\"model-name\\\"}\"\n}",
+        "responseBody": "={{ {\n  \"success\": false,\n  \"error\": \"Model name is required. Send POST request with body: {\\\"model_name\\\": \\\"model-name\\\"}\"\n} }}",
         "options": {
           "responseCode": 400
         }
@@ -93,12 +123,13 @@
       "name": "Error Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [680, 400]
+      "position": [680, 400],
+      "notes": "Returns 400 Bad Request when model_name is missing from request body"
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"success\": false,\n  \"error\": \"{{ $json.error || 'Failed to pull model' }}\",\n  \"model_name\": \"{{ $('Pull Model from Ollama').item.json.body.name || $json.body.model_name }}\"\n}",
+        "responseBody": "={{ {\n  \"success\": false,\n  \"error\": $json.error ? $json.error.message || $json.error : 'Failed to pull model',\n  \"model_name\": $('Webhook - Pull Model').item.json.body.model_name || 'unknown'\n} }}",
         "options": {
           "responseCode": 500
         }
@@ -107,7 +138,8 @@
       "name": "Pull Error Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.4,
-      "position": [900, 400]
+      "position": [900, 400],
+      "notes": "Returns 500 Internal Server Error when model pull fails"
     }
   ],
   "connections": {
@@ -177,6 +209,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2024-01-01T00:00:00.000Z",
-  "versionId": "1"
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "2"
 }

@@ -1,0 +1,390 @@
+{
+  "name": "Qdrant Data Cleanup & Maintenance",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Qdrant Cleanup & Maintenance",
+        "formDescription": "Clean up old data, deduplicate, or optimize Qdrant collections.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Collection Name",
+              "fieldType": "text",
+              "placeholder": "web-scrapes",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Action",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "delete_old",
+                    "label": "Delete Points Older Than (days)"
+                  },
+                  {
+                    "option": "delete_by_url",
+                    "label": "Delete All Points from URL"
+                  },
+                  {
+                    "option": "optimize",
+                    "label": "Optimize Collection"
+                  },
+                  {
+                    "option": "snapshot",
+                    "label": "Create Snapshot"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Days Old (for delete_old)",
+              "fieldType": "number",
+              "placeholder": "30",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "URL (for delete_by_url)",
+              "fieldType": "text",
+              "placeholder": "https://example.com",
+              "requiredField": false
+            }
+          ]
+        },
+        "options": {
+          "respondWithOptions": {
+            "values": {
+              "respondWith": "text"
+            }
+          }
+        }
+      },
+      "id": "form-trigger",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [240, 400],
+      "notes": "Form interface for cleanup operations"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "collection_name",
+              "name": "collection_name",
+              "value": "={{ $json.collection_name }}",
+              "type": "string"
+            },
+            {
+              "id": "action",
+              "name": "action",
+              "value": "={{ $json.action }}",
+              "type": "string"
+            },
+            {
+              "id": "days_old",
+              "name": "days_old",
+              "value": "={{ $json.days_old || 30 }}",
+              "type": "number"
+            },
+            {
+              "id": "url",
+              "name": "url",
+              "value": "={{ $json.url || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-params",
+      "name": "Set Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400],
+      "notes": "Extracts form parameters"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}/points/scroll",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"limit\": 10000,\n  \"with_payload\": true,\n  \"with_vector\": false\n} }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "fetch-points",
+      "name": "Fetch All Points",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 400],
+      "notes": "Fetches all points from collection for filtering",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Filter points based on action\nconst action = $('Set Parameters').item.json.action;\nconst daysOld = parseInt($('Set Parameters').item.json.days_old) || 30;\nconst targetUrl = $('Set Parameters').item.json.url || '';\nconst points = $input.item.json.result?.points || [];\n\nlet pointsToDelete = [];\nconst now = new Date();\n\nswitch (action) {\n  case 'delete_old':\n    const cutoffDate = new Date(now.getTime() - daysOld * 24 * 60 * 60 * 1000);\n    pointsToDelete = points.filter(point => {\n      const storedAt = point.payload?.stored_at || point.payload?.crawled_at;\n      if (!storedAt) return false;\n      const pointDate = new Date(storedAt);\n      return pointDate < cutoffDate;\n    });\n    break;\n    \n  case 'delete_by_url':\n    if (!targetUrl) {\n      throw new Error('URL is required for delete_by_url action');\n    }\n    pointsToDelete = points.filter(point => {\n      const pointUrl = point.payload?.url || '';\n      return pointUrl === targetUrl || pointUrl.startsWith(targetUrl);\n    });\n    break;\n    \n  default:\n    pointsToDelete = [];\n}\n\nreturn {\n  json: {\n    action,\n    total_points: points.length,\n    points_to_delete: pointsToDelete.length,\n    point_ids: pointsToDelete.map(p => p.id)\n  }\n};"
+      },
+      "id": "filter-points",
+      "name": "Filter Points to Delete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400],
+      "notes": "Filters points based on age or URL criteria"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Route to appropriate cleanup action\nconst action = $('Set Parameters').item.json.action;\nconst collectionName = $('Set Parameters').item.json.collection_name;\nconst pointIds = $input.item.json.point_ids || [];\n\nlet method, url, body;\n\nif (action === 'delete_old' || action === 'delete_by_url') {\n  if (pointIds.length === 0) {\n    return {\n      json: {\n        skip: true,\n        message: 'No points found matching criteria'\n      }\n    };\n  }\n  \n  // Delete points in batches of 100\n  const batches = [];\n  for (let i = 0; i < pointIds.length; i += 100) {\n    batches.push(pointIds.slice(i, i + 100));\n  }\n  \n  return {\n    json: {\n      action: 'delete_points',\n      collection_name: collectionName,\n      batches: batches,\n      total_points: pointIds.length\n    }\n  };\n} else if (action === 'optimize') {\n  return {\n    json: {\n      action: 'optimize',\n      collection_name: collectionName\n    }\n  };\n} else if (action === 'snapshot') {\n  return {\n    json: {\n      action: 'snapshot',\n      collection_name: collectionName\n    }\n  };\n}\n\nreturn { json: { skip: true } };"
+      },
+      "id": "route-cleanup",
+      "name": "Route Cleanup Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400],
+      "notes": "Routes to appropriate cleanup operation"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-skip",
+      "name": "Check Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1340, 400],
+      "notes": "Skip if no points to delete"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}/points/delete",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"points\": $json.batches[0]\n} }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "delete-points",
+      "name": "Delete Points",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1560, 400],
+      "notes": "Deletes filtered points from collection",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}/optimize",
+        "authentication": "none",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "optimize-collection",
+      "name": "Optimize Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1560, 500],
+      "notes": "Optimizes collection index for better performance",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}/snapshots",
+        "authentication": "none",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "create-snapshot",
+      "name": "Create Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [1560, 600],
+      "notes": "Creates a snapshot of the collection for backup",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Format final response\nconst action = $('Set Parameters').item.json.action;\nconst collectionName = $('Set Parameters').item.json.collection_name;\nconst filterResult = $('Filter Points to Delete').item.json;\n\nlet message;\n\nif ($input.item.json.skip) {\n  message = filterResult.message || 'Operation skipped';\n} else if (action === 'delete_old' || action === 'delete_by_url') {\n  const deleted = $input.item.json.status === 'completed' ? filterResult.points_to_delete : 0;\n  message = `✅ Deleted ${deleted} point(s) from collection '${collectionName}'`;\n  message += `\\nTotal points before: ${filterResult.total_points}`;\n  message += `\\nTotal points after: ${filterResult.total_points - deleted}`;\n} else if (action === 'optimize') {\n  message = `✅ Collection '${collectionName}' optimized successfully!`;\n} else if (action === 'snapshot') {\n  const snapshot = $input.item.json.result || {};\n  message = `✅ Snapshot created for collection '${collectionName}'!`;\n  if (snapshot.name) {\n    message += `\\nSnapshot name: ${snapshot.name}`;\n  }\n}\n\nreturn {\n  json: {\n    action,\n    collection_name: collectionName,\n    message,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "format-result",
+      "name": "Format Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 400],
+      "notes": "Formats cleanup operation result"
+    }
+  ],
+  "connections": {
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Parameters": {
+      "main": [
+        [
+          {
+            "node": "Fetch All Points",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch All Points": {
+      "main": [
+        [
+          {
+            "node": "Filter Points to Delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Points to Delete": {
+      "main": [
+        [
+          {
+            "node": "Route Cleanup Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Cleanup Action": {
+      "main": [
+        [
+          {
+            "node": "Check Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Skip": {
+      "main": [
+        [
+          {
+            "node": "Delete Points",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Optimize Collection",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Points": {
+      "main": [
+        [
+          {
+            "node": "Format Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optimize Collection": {
+      "main": [
+        [
+          {
+            "node": "Format Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Format Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "2"
+}

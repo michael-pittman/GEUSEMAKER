@@ -1,0 +1,269 @@
+{
+  "name": "Generic Service Installer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "install-service",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-install",
+      "name": "Webhook - Install Service",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 300],
+      "webhookId": "install-service",
+      "notes": "POST /webhook/install-service\nBody: {\"service_name\": \"package-name\", \"install_method\": \"pip|npm|apt\", \"version\": \"optional\", \"venv_path\": \"/opt/service-venv\"}"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "service-name",
+              "name": "service_name",
+              "value": "={{ $json.body.service_name }}",
+              "type": "string"
+            },
+            {
+              "id": "install-method",
+              "name": "install_method",
+              "value": "={{ $json.body.install_method || 'pip' }}",
+              "type": "string"
+            },
+            {
+              "id": "version",
+              "name": "version",
+              "value": "={{ $json.body.version || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "venv-path",
+              "name": "venv_path",
+              "value": "={{ $json.body.venv_path || '/opt/' + $json.body.service_name + '-venv' }}",
+              "type": "string"
+            },
+            {
+              "id": "python-version",
+              "name": "python_version",
+              "value": "={{ $json.body.python_version || 'python3' }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "set-params",
+      "name": "Set Installation Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300],
+      "notes": "Extract and set default values for installation parameters"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has-service-name",
+              "leftValue": "={{ $json.service_name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ]
+        }
+      },
+      "id": "validate-input",
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Create Python virtual environment if it doesn't exist\nconst { execSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst venvPath = $input.item.json.venv_path;\nconst pythonVersion = $input.item.json.python_version || 'python3';\n\nlet output = [];\nlet errors = [];\n\ntry {\n  // Check if venv exists\n  const venvExists = fs.existsSync(venvPath) && fs.existsSync(path.join(venvPath, 'bin', 'activate'));\n  \n  if (!venvExists) {\n    output.push(`Creating virtual environment at ${venvPath}...`);\n    execSync(`${pythonVersion} -m venv ${venvPath}`, { \n      encoding: 'utf-8',\n      stdio: 'pipe'\n    });\n    output.push('Virtual environment created successfully');\n  } else {\n    output.push(`Virtual environment already exists at ${venvPath}`);\n  }\n  \n  return {\n    json: {\n      success: true,\n      venv_path: venvPath,\n      venv_exists: venvExists,\n      output: output.join('\\n')\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      error: error.message,\n      output: output.join('\\n')\n    }\n  };\n}"
+      },
+      "id": "create-venv",
+      "name": "Create Virtual Environment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200],
+      "notes": "Create Python virtual environment if it doesn't exist"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Install service using specified method\nconst { execSync } = require('child_process');\nconst path = require('path');\n\nconst serviceName = $input.item.json.service_name;\nconst installMethod = $input.item.json.install_method || 'pip';\nconst version = $input.item.json.version || '';\nconst venvPath = $input.item.json.venv_path;\n\nconst activateScript = path.join(venvPath, 'bin', 'activate');\n\nlet installCommand = '';\nlet output = [];\n\ntry {\n  switch(installMethod) {\n    case 'pip':\n      const packageSpec = version ? `${serviceName}==${version}` : serviceName;\n      installCommand = `source ${activateScript} && pip install --upgrade pip && pip install ${packageSpec}`;\n      break;\n    \n    case 'npm':\n      installCommand = `npm install -g ${serviceName}${version ? '@' + version : ''}`;\n      break;\n    \n    case 'apt':\n      installCommand = `sudo apt-get update && sudo apt-get install -y ${serviceName}`;\n      break;\n    \n    default:\n      throw new Error(`Unsupported install method: ${installMethod}`);\n  }\n  \n  output.push(`Installing ${serviceName} using ${installMethod}...`);\n  output.push(`Command: ${installCommand}`);\n  \n  const result = execSync(installCommand, {\n    encoding: 'utf-8',\n    shell: '/bin/bash',\n    stdio: 'pipe',\n    timeout: 600000  // 10 minutes timeout\n  });\n  \n  output.push(result);\n  output.push(`\\n${serviceName} installed successfully!`);\n  \n  return {\n    json: {\n      success: true,\n      service_name: serviceName,\n      install_method: installMethod,\n      version: version || 'latest',\n      venv_path: venvPath,\n      output: output.join('\\n')\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      service_name: serviceName,\n      error: error.message,\n      output: output.join('\\n')\n    }\n  };\n}"
+      },
+      "id": "install-service",
+      "name": "Install Service",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 200],
+      "notes": "Install the service using pip, npm, or apt"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Verify installation\nconst { execSync } = require('child_process');\nconst path = require('path');\n\nconst serviceName = $input.item.json.service_name;\nconst installMethod = $input.item.json.install_method || 'pip';\nconst venvPath = $input.item.json.venv_path;\n\nconst activateScript = path.join(venvPath, 'bin', 'activate');\n\nlet verifyCommand = '';\nlet output = [];\n\ntry {\n  switch(installMethod) {\n    case 'pip':\n      verifyCommand = `source ${activateScript} && pip show ${serviceName}`;\n      break;\n    \n    case 'npm':\n      verifyCommand = `npm list -g ${serviceName}`;\n      break;\n    \n    case 'apt':\n      verifyCommand = `dpkg -l | grep ${serviceName}`;\n      break;\n  }\n  \n  const result = execSync(verifyCommand, {\n    encoding: 'utf-8',\n    shell: '/bin/bash',\n    stdio: 'pipe'\n  });\n  \n  output.push(`Verification output:\\n${result}`);\n  \n  return {\n    json: {\n      success: true,\n      service_name: serviceName,\n      verified: true,\n      verification_output: result,\n      output: output.join('\\n')\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      service_name: serviceName,\n      verified: false,\n      error: error.message\n    }\n  };\n}"
+      },
+      "id": "verify-install",
+      "name": "Verify Installation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 200],
+      "notes": "Verify the service was installed correctly"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": {{ $json.success }},\n  \"service_name\": \"{{ $json.service_name }}\",\n  \"install_method\": \"{{ $json.install_method }}\",\n  \"version\": \"{{ $json.version || 'latest' }}\",\n  \"venv_path\": \"{{ $json.venv_path }}\",\n  \"verified\": {{ $json.verified || false }},\n  \"output\": \"{{ $json.output || '' }}\",\n  \"verification_output\": \"{{ $json.verification_output || '' }}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"Service name is required. Send POST request with body: {\\\"service_name\\\": \\\"package-name\\\", \\\"install_method\\\": \\\"pip|npm|apt\\\"}\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"{{ $json.error || 'Installation failed' }}\",\n  \"service_name\": \"{{ $json.service_name }}\",\n  \"output\": \"{{ $json.output || '' }}\"\n}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "install-error-response",
+      "name": "Install Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1120, 400]
+    }
+  ],
+  "connections": {
+    "Webhook - Install Service": {
+      "main": [
+        [
+          {
+            "node": "Set Installation Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Installation Parameters": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Create Virtual Environment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Virtual Environment": {
+      "main": [
+        [
+          {
+            "node": "Install Service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Install Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Install Service": {
+      "main": [
+        [
+          {
+            "node": "Verify Installation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Install Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Installation": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
+

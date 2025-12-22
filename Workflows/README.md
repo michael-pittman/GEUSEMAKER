@@ -69,8 +69,8 @@ nomic-embed-text,znbang/bge:small-en-v1.5,all-minilm
 
 ### 2. Web Scraping & Vector Storage
 
-#### `04-web-scrape-to-qdrant.json`
-**Complete pipeline** to scrape websites and store embeddings in Qdrant.
+#### `04-web-scrape-to-qdrant.json` (Enhanced v2.0)
+**Complete pipeline** to scrape websites and store embeddings in Qdrant with enhanced error handling and crawl4ai 2.0.2 features.
 
 **Trigger Type:** Form Trigger (user-friendly web form)
 
@@ -90,21 +90,108 @@ curl -X POST http://<n8n-url>/form/<form-path> \
 
 **Workflow Steps:**
 1. User submits URL via form
-2. Crawls website with Crawl4AI
-3. Chunks content into 1000-character pieces
-4. Generates embeddings with Ollama
-5. Stores vectors in Qdrant collection `web-scrapes`
-6. Shows success message
+2. **Validates URL format** (http/https only, proper format)
+3. **Crawls website with Crawl4AI 2.0.2** (enhanced parameters)
+4. **Validates crawl response** (checks for errors, content length)
+5. **Chunks content** with 200-char overlap for better context
+6. Generates embeddings with Ollama (with retry logic)
+7. Stores vectors in Qdrant collection `web-scrapes` (with retry logic)
+8. **Aggregates results** and shows summary
+
+**Enhanced Features (v2.0):**
+- ✅ **URL validation** before crawling (prevents invalid requests)
+- ✅ **Crawl4AI 2.0.2 parameters**: `remove_overlay_elements`, `process_iframes`, `timeout`, `word_count_threshold`
+- ✅ **Response validation** with detailed error messages
+- ✅ **Chunking with overlap** (200 chars) for better context preservation
+- ✅ **Retry logic** on all HTTP requests (Crawl4AI, Ollama, Qdrant)
+- ✅ **Enhanced error handling** at each step
+- ✅ **Rich metadata** tracking (timestamps, chunk indices, embedding dimensions)
+- ✅ **Result aggregation** with summary statistics
+- ✅ **Timeout handling** (60s for crawl, 30s for embeddings/Qdrant)
+- User-friendly form interface (no API knowledge needed)
+- **Best for:** Production use, reliable scraping, content ingestion with error recovery
+
+**Crawl4AI 2.0.2 Parameters Used:**
+- `bypass_cache`: true (always fetch fresh content)
+- `extract_markdown`: true (structured text extraction)
+- `extract_links`: true (capture all links)
+- `wait_for`: "networkidle" (wait for page to fully load)
+- `remove_overlay_elements`: true (remove popups/modals)
+- `process_iframes`: false (skip iframes for performance)
+- `timeout`: 30000ms (30 second timeout)
+- `word_count_threshold`: 100 (minimum content length)
+
+### 3. Qdrant Management
+
+#### `06-qdrant-management.json`
+**Collection management workflow** for creating, listing, and managing Qdrant collections.
+
+**Trigger Type:** Form Trigger (user-friendly web form)
+
+**Usage:**
+1. Import workflow into n8n
+2. Activate workflow
+3. Access the form URL
+4. Select action: Create, List, Info, Delete, or Stats
+5. Enter collection name and parameters
+6. Submit
+
+**Available Actions:**
+- **Create Collection** - Create new collection with specified vector size
+- **List All Collections** - View all collections with point counts
+- **Get Collection Info** - View detailed collection information
+- **Delete Collection** - Remove collection (careful!)
+- **Get Statistics** - View collection statistics and configuration
 
 **Features:**
-- User-friendly form interface (no API knowledge needed)
-- Automatic content chunking
-- Vector embedding generation
-- Qdrant storage with metadata
-- Error handling
-- **Best for:** Non-technical users, manual content ingestion, one-off scraping
+- User-friendly form interface
+- Supports all collection operations
+- Validates inputs
+- Formatted responses
+- **Best for:** Collection setup, maintenance, monitoring
 
-### 3. Semantic Search & RAG
+**Example Use Cases:**
+- Create collections for new workflows
+- Check collection sizes before cleanup
+- Verify collection configuration
+- Monitor collection health
+
+#### `07-qdrant-cleanup.json`
+**Data cleanup and maintenance workflow** for Qdrant collections.
+
+**Trigger Type:** Form Trigger (user-friendly web form)
+
+**Usage:**
+1. Import workflow into n8n
+2. Activate workflow
+3. Access the form URL
+4. Select collection and cleanup action
+5. Enter parameters (days old, URL, etc.)
+6. Submit
+
+**Available Actions:**
+- **Delete Points Older Than** - Remove points older than X days
+- **Delete by URL** - Remove all points from specific URL
+- **Optimize Collection** - Optimize collection index for performance
+- **Create Snapshot** - Create backup snapshot
+
+**Features:**
+- Time-based data retention
+- URL-based cleanup
+- Collection optimization
+- Snapshot creation
+- Batch deletion support
+- **Best for:** Data lifecycle management, maintenance, backups
+
+**Example Use Cases:**
+- Weekly cleanup of old scraped content
+- Remove outdated data before re-scraping
+- Optimize collections after bulk operations
+- Create backups before major changes
+
+**⚠️ Important:** Always create snapshots before bulk deletions!
+
+### 4. Semantic Search & RAG
 
 #### `05-semantic-search-rag.json`
 **RAG (Retrieval-Augmented Generation)** workflow for semantic search.
@@ -208,7 +295,138 @@ docker exec ollama ollama pull nomic-embed-text
 2. Edit model name in "Set Model Name" node
 3. Click "Test workflow"
 
-### 3. Activate Workflows
+### 3. ADK Agent Management
+
+#### `07-generic-service-installer.json`
+**Generic service installer** for installing Python packages, npm packages, or apt packages on the n8n server.
+
+**Trigger Type:** Webhook (POST endpoint)
+
+**Usage:**
+```bash
+# Install a Python package
+curl -X POST http://<n8n-url>/webhook/install-service \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service_name": "google-adk",
+    "install_method": "pip",
+    "version": "latest",
+    "venv_path": "/opt/adk-venv"
+  }'
+
+# Install via npm
+curl -X POST http://<n8n-url>/webhook/install-service \
+  -H "Content-Type: application/json" \
+  -d '{
+    "service_name": "some-package",
+    "install_method": "npm"
+  }'
+```
+
+**Features:**
+- Supports pip, npm, and apt installation methods
+- Creates Python virtual environments automatically
+- Verifies installation after completion
+- Returns detailed output and verification results
+- **Best for:** Installing any service/package on the n8n server
+
+#### `08-adk-install-create-deploy.json`
+**Complete ADK agent lifecycle management** - install ADK, create agents, and deploy them as systemd services.
+
+**Trigger Type:** Webhook (POST endpoint)
+
+**Actions:**
+1. **install** - Install Google ADK in a virtual environment
+2. **create** - Generate ADK agent Python code with all tools
+3. **deploy** - Deploy agent as systemd service
+
+**Usage:**
+
+**Install ADK:**
+```bash
+curl -X POST http://<n8n-url>/webhook/adk-install-deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "install",
+    "adk_version": "latest",
+    "venv_path": "/opt/adk-venv"
+  }'
+```
+
+**Create ADK Agent:**
+```bash
+curl -X POST http://<n8n-url>/webhook/adk-install-deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "create",
+    "agent_name": "qdrant_manager",
+    "model_name": "gemini-2.5-flash",
+    "enable_qdrant_tools": true,
+    "enable_ollama_tools": true,
+    "enable_crawl4ai_tools": true,
+    "enable_n8n_mcp": true,
+    "n8n_mcp_token": "your-token-here",
+    "qdrant_url": "http://qdrant:6333",
+    "ollama_url": "http://ollama:11434",
+    "crawl4ai_url": "http://crawl4ai:11235"
+  }'
+```
+
+**Deploy ADK Agent:**
+```bash
+curl -X POST http://<n8n-url>/webhook/adk-install-deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "deploy",
+    "agent_name": "qdrant_manager",
+    "agent_port": 8000,
+    "venv_path": "/opt/adk-venv"
+  }'
+```
+
+**Configuration Parameters:**
+- `agent_name` - Name of the ADK agent (default: "qdrant_manager")
+- `model_name` - Gemini model to use (default: "gemini-2.5-flash")
+- `agent_port` - Port for ADK web server (default: 8000)
+- `venv_path` - Python virtual environment path (default: "/opt/adk-venv")
+- `agent_dir` - Directory for agent files (default: "/mnt/efs/adk-agents")
+- `enable_qdrant_tools` - Enable Qdrant integration tools (default: true)
+- `enable_ollama_tools` - Enable Ollama integration tools (default: true)
+- `enable_crawl4ai_tools` - Enable Crawl4AI web scraping tools (default: true)
+- `enable_n8n_mcp` - Enable n8n MCP integration (default: false)
+- `qdrant_url`, `ollama_url`, `crawl4ai_url`, `n8n_url` - Service URLs
+- `n8n_mcp_token` - Token for n8n MCP server authentication
+- `google_api_key` - Google API key for Gemini models
+- `agent_instruction` - Custom agent instruction prompt
+- `deployment_method` - Deployment method (default: "systemd")
+
+**Available Tools Generated:**
+
+**Qdrant Tools** (when `enable_qdrant_tools: true`):
+- `list_qdrant_collections` - List all collections
+- `get_collection_info` - Get collection details
+- `create_collection` - Create new collection
+- `search_qdrant` - Semantic search in collection (uses Ollama for embeddings)
+
+**Ollama Tools** (when `enable_ollama_tools: true`):
+- `ollama_generate` - Generate text using Ollama LLM
+
+**Crawl4AI Tools** (when `enable_crawl4ai_tools: true`):
+- `crawl4ai_scrape` - Scrape a single website (returns markdown, HTML, links)
+- `crawl4ai_batch_scrape` - Scrape multiple URLs in batch
+
+**n8n MCP Tools** (when `enable_n8n_mcp: true` and `n8n_mcp_token` provided):
+- `n8n_mcp_toolset` - Full n8n workflow management via MCP protocol
+
+**Features:**
+- Complete ADK agent lifecycle management
+- Generates Python code with Qdrant, Ollama, and n8n MCP tools
+- Creates systemd services for production deployment
+- All configuration parameters exposed in workflow nodes
+- Persistent storage on EFS (`/mnt/efs/adk-agents`)
+- **Best for:** Managing ADK agents in hybrid n8n/ADK architecture
+
+### 4. Activate Workflows
 
 After importing workflows into n8n:
 1. Open each workflow
@@ -234,13 +452,16 @@ To:
 "model": "znbang/bge:small-en-v1.5"
 ```
 
-### Adjust Chunk Size
+### Adjust Chunk Size and Overlap
 
-Edit the `chunkSize` variable in `Chunk Content` node (04-web-scrape-to-qdrant.json):
+Edit the chunking parameters in `Chunk Content` node (04-web-scrape-to-qdrant.json):
 
 ```javascript
-const chunkSize = 1000; // Change to desired size (500-2000 recommended)
+const chunkSize = 1000;        // Change to desired size (500-2000 recommended)
+const chunkOverlap = 200;      // Overlap between chunks for context preservation
 ```
+
+**Why overlap?** Overlapping chunks preserve context at boundaries, improving embedding quality for semantic search. Recommended overlap: 10-20% of chunk size.
 
 ### Modify Search Parameters
 
@@ -384,10 +605,28 @@ curl -X POST http://localhost:5678/api/v1/workflows \
 6. **Try semantic search** using workflow 05
 7. **Customize** for your specific use case
 
+## Qdrant Management
+
+For comprehensive Qdrant management guidance, see **[QDRANT_MANAGEMENT_GUIDE.md](QDRANT_MANAGEMENT_GUIDE.md)**.
+
+**Quick Start:**
+1. Import `06-qdrant-management.json` for collection operations
+2. Import `07-qdrant-cleanup.json` for data maintenance
+3. Read the management guide for best practices
+
+**Key Topics Covered:**
+- Collection naming conventions
+- Data lifecycle management
+- Performance optimization
+- Backup & recovery
+- Multi-workflow best practices
+- Troubleshooting
+
 ## Additional Resources
 
 - [n8n Documentation](https://docs.n8n.io/)
 - [n8n Trigger Nodes](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.manualtrigger/)
 - [Ollama API Documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
 - [Qdrant API Documentation](https://qdrant.github.io/qdrant/redoc/index.html)
+- [Qdrant Management Guide](QDRANT_MANAGEMENT_GUIDE.md) - **Comprehensive Qdrant management**
 - [Crawl4AI Documentation](https://github.com/unclecode/crawl4ai)

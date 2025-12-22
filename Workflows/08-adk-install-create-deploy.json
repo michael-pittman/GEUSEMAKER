@@ -1,0 +1,455 @@
+{
+  "name": "ADK Agent Install & Deploy",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "adk-install-deploy",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-adk",
+      "name": "Webhook - ADK Install/Deploy",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [240, 500],
+      "webhookId": "adk-install-deploy",
+      "notes": "POST /webhook/adk-install-deploy\nBody: {\"action\": \"install|create|deploy\", \"agent_name\": \"my-agent\", ...}"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "action",
+              "name": "action",
+              "value": "={{ $json.body.action || 'install' }}",
+              "type": "string"
+            },
+            {
+              "id": "agent-name",
+              "name": "agent_name",
+              "value": "={{ $json.body.agent_name || 'qdrant_manager' }}",
+              "type": "string"
+            },
+            {
+              "id": "adk-version",
+              "name": "adk_version",
+              "value": "={{ $json.body.adk_version || 'latest' }}",
+              "type": "string"
+            },
+            {
+              "id": "venv-path",
+              "name": "venv_path",
+              "value": "={{ $json.body.venv_path || '/opt/adk-venv' }}",
+              "type": "string"
+            },
+            {
+              "id": "agent-port",
+              "name": "agent_port",
+              "value": "={{ $json.body.agent_port || 8000 }}",
+              "type": "number"
+            },
+            {
+              "id": "model-name",
+              "name": "model_name",
+              "value": "={{ $json.body.model_name || 'gemini-2.5-flash' }}",
+              "type": "string"
+            },
+            {
+              "id": "qdrant-url",
+              "name": "qdrant_url",
+              "value": "={{ $json.body.qdrant_url || 'http://qdrant:6333' }}",
+              "type": "string"
+            },
+            {
+              "id": "ollama-url",
+              "name": "ollama_url",
+              "value": "={{ $json.body.ollama_url || 'http://ollama:11434' }}",
+              "type": "string"
+            },
+            {
+              "id": "crawl4ai-url",
+              "name": "crawl4ai_url",
+              "value": "={{ $json.body.crawl4ai_url || 'http://crawl4ai:11235' }}",
+              "type": "string"
+            },
+            {
+              "id": "n8n-url",
+              "name": "n8n_url",
+              "value": "={{ $json.body.n8n_url || 'http://localhost:5678' }}",
+              "type": "string"
+            },
+            {
+              "id": "n8n-mcp-token",
+              "name": "n8n_mcp_token",
+              "value": "={{ $json.body.n8n_mcp_token || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "google-api-key",
+              "name": "google_api_key",
+              "value": "={{ $json.body.google_api_key || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "agent-instruction",
+              "name": "agent_instruction",
+              "value": "={{ $json.body.agent_instruction || 'You are a helpful AI assistant that manages Qdrant vector databases and can interact with n8n workflows.' }}",
+              "type": "string"
+            },
+            {
+              "id": "enable-qdrant-tools",
+              "name": "enable_qdrant_tools",
+              "value": "={{ $json.body.enable_qdrant_tools !== false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "enable-ollama-tools",
+              "name": "enable_ollama_tools",
+              "value": "={{ $json.body.enable_ollama_tools !== false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "enable-n8n-mcp",
+              "name": "enable_n8n_mcp",
+              "value": "={{ $json.body.enable_n8n_mcp || false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "enable-crawl4ai-tools",
+              "name": "enable_crawl4ai_tools",
+              "value": "={{ $json.body.enable_crawl4ai_tools !== false }}",
+              "type": "boolean"
+            },
+            {
+              "id": "deployment-method",
+              "name": "deployment_method",
+              "value": "={{ $json.body.deployment_method || 'systemd' }}",
+              "type": "string"
+            },
+            {
+              "id": "agent-dir",
+              "name": "agent_dir",
+              "value": "={{ $json.body.agent_dir || '/mnt/efs/adk-agents' }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "set-adk-config",
+      "name": "Set ADK Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 500],
+      "notes": "All ADK configuration parameters with defaults"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "has-action",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ]
+        }
+      },
+      "id": "validate-action",
+      "name": "Validate Action",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "is-install",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "install",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-install",
+      "name": "Check: Install",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 400],
+      "notes": "Check if action is 'install'"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "is-create",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "create",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-create",
+      "name": "Check: Create",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 500],
+      "notes": "Check if action is 'create'"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "is-deploy",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "deploy",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-deploy",
+      "name": "Check: Deploy",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 600],
+      "notes": "Check if action is 'deploy'"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Install Google ADK in virtual environment\nconst { execSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst venvPath = $input.item.json.venv_path;\nconst adkVersion = $input.item.json.adk_version;\n\nconst activateScript = path.join(venvPath, 'bin', 'activate');\n\nlet output = [];\n\ntry {\n  // Create venv if it doesn't exist\n  if (!fs.existsSync(venvPath)) {\n    output.push(`Creating virtual environment at ${venvPath}...`);\n    execSync(`python3 -m venv ${venvPath}`, { encoding: 'utf-8', stdio: 'pipe' });\n  }\n  \n  // Upgrade pip\n  output.push('Upgrading pip...');\n  execSync(`source ${activateScript} && pip install --upgrade pip`, {\n    encoding: 'utf-8',\n    shell: '/bin/bash',\n    stdio: 'pipe'\n  });\n  \n  // Install ADK\n  const packageSpec = adkVersion === 'latest' ? 'google-adk' : `google-adk==${adkVersion}`;\n  output.push(`Installing ${packageSpec}...`);\n  \n  execSync(`source ${activateScript} && pip install ${packageSpec}`, {\n    encoding: 'utf-8',\n    shell: '/bin/bash',\n    stdio: 'pipe',\n    timeout: 300000  // 5 minutes\n  });\n  \n  // Verify installation\n  const verifyResult = execSync(`source ${activateScript} && pip show google-adk`, {\n    encoding: 'utf-8',\n    shell: '/bin/bash',\n    stdio: 'pipe'\n  });\n  \n  output.push(`\\nInstallation verified:\\n${verifyResult}`);\n  \n  return {\n    json: {\n      success: true,\n      action: 'install',\n      venv_path: venvPath,\n      adk_version: adkVersion,\n      output: output.join('\\n')\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      action: 'install',\n      error: error.message,\n      output: output.join('\\n')\n    }\n  };\n}"
+      },
+      "id": "install-adk",
+      "name": "Install ADK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "notes": "Install Google ADK in virtual environment"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Generate ADK agent Python code with all configuration\nconst fs = require('fs');\nconst path = require('path');\n\nconst config = $input.item.json;\nconst agentDir = config.agent_dir || '/mnt/efs/adk-agents';\nconst agentName = config.agent_name;\nconst agentFile = path.join(agentDir, `${agentName}.py`);\n\n// Ensure directory exists\nif (!fs.existsSync(agentDir)) {\n  fs.mkdirSync(agentDir, { recursive: true });\n}\n\n// Build tools list\nlet toolsCode = [];\nlet imports = ['from google.adk.agents import Agent', 'from google.adk.tools import Tool', 'import httpx', 'import os'];\n\n// Qdrant tools\nif (config.enable_qdrant_tools) {\n  toolsCode.push(`@Tool(name='list_qdrant_collections', description='List all Qdrant collections')\ndef list_collections() -> dict:\n    qdrant_url = os.getenv('QDRANT_URL', '${config.qdrant_url}')\n    response = httpx.get(f'{qdrant_url}/collections')\n    return response.json()`);\n  \n  toolsCode.push(`@Tool(name='get_collection_info', description='Get collection details')\ndef get_collection_info(collection_name: str) -> dict:\n    qdrant_url = os.getenv('QDRANT_URL', '${config.qdrant_url}')\n    response = httpx.get(f'{qdrant_url}/collections/{collection_name}')\n    return response.json()`);\n  \n  toolsCode.push(`@Tool(name='create_collection', description='Create a new Qdrant collection')\ndef create_collection(collection_name: str, vector_size: int = 768, distance: str = 'Cosine') -> dict:\n    qdrant_url = os.getenv('QDRANT_URL', '${config.qdrant_url}')\n    response = httpx.put(\n        f'{qdrant_url}/collections/{collection_name}',\n        json={'vectors': {'size': vector_size, 'distance': distance}}\n    )\n    return response.json()`);\n  \n  toolsCode.push(`@Tool(name='search_qdrant', description='Search Qdrant collection')\ndef search_collection(collection_name: str, query_text: str, limit: int = 5) -> dict:\n    qdrant_url = os.getenv('QDRANT_URL', '${config.qdrant_url}')\n    ollama_url = os.getenv('OLLAMA_URL', '${config.ollama_url}')\n    \n    # Generate embedding\n    embed_resp = httpx.post(\n        f'{ollama_url}/api/embed',\n        json={'model': 'nomic-embed-text', 'input': query_text}\n    )\n    embedding = embed_resp.json()['embeddings'][0]\n    \n    # Search Qdrant\n    search_resp = httpx.post(\n        f'{qdrant_url}/collections/{collection_name}/points/search',\n        json={'vector': embedding, 'limit': limit, 'with_payload': True}\n    )\n    return search_resp.json()`);\n}\n\n// Ollama tools\nif (config.enable_ollama_tools) {\n  toolsCode.push(`@Tool(name='ollama_generate', description='Generate text using Ollama')\ndef ollama_generate(prompt: str, model: str = 'qwen2.5:1.5b-instruct') -> str:\n    ollama_url = os.getenv('OLLAMA_URL', '${config.ollama_url}')\n    response = httpx.post(\n        f'{ollama_url}/api/generate',\n        json={'model': model, 'prompt': prompt}\n    )\n    return response.json()['response']`);\n}\n\n// Crawl4AI tools\nif (config.enable_crawl4ai_tools) {\n  toolsCode.push(`@Tool(name='crawl4ai_scrape', description='Scrape a website using Crawl4AI. Returns markdown, HTML, and links.')\ndef crawl4ai_scrape(\n    url: str,\n    extract_markdown: bool = True,\n    extract_links: bool = True,\n    bypass_cache: bool = True,\n    timeout: int = 30000,\n    word_count_threshold: int = 100\n) -> dict:\n    \"\"\"Scrape a website using Crawl4AI.\n    \n    Args:\n        url: Website URL to scrape\n        extract_markdown: Extract markdown content (default: True)\n        extract_links: Extract links from page (default: True)\n        bypass_cache: Bypass cache for fresh content (default: True)\n        timeout: Request timeout in milliseconds (default: 30000)\n        word_count_threshold: Minimum word count to process (default: 100)\n    \"\"\"\n    crawl4ai_url = os.getenv('CRAWL4AI_URL', '${config.crawl4ai_url}')\n    response = httpx.post(\n        f'{crawl4ai_url}/crawl',\n        json={\n            'url': url,\n            'bypass_cache': bypass_cache,\n            'extract_markdown': extract_markdown,\n            'extract_links': extract_links,\n            'wait_for': 'networkidle',\n            'screenshot': False,\n            'remove_overlay_elements': True,\n            'process_iframes': False,\n            'verbose': False,\n            'timeout': timeout,\n            'word_count_threshold': word_count_threshold\n        },\n        timeout=60.0  # HTTP timeout\n    )\n    return response.json()`);\n  \n  toolsCode.push(`@Tool(name='crawl4ai_batch_scrape', description='Scrape multiple URLs in batch using Crawl4AI')\ndef crawl4ai_batch_scrape(\n    urls: list[str],\n    extraction_strategy: str = 'markdown',\n    bypass_cache: bool = False,\n    word_count_threshold: int = 50\n) -> dict:\n    \"\"\"Scrape multiple URLs in batch.\n    \n    Args:\n        urls: List of URLs to scrape\n        extraction_strategy: 'markdown' or 'html' (default: 'markdown')\n        bypass_cache: Bypass cache (default: False)\n        word_count_threshold: Minimum word count (default: 50)\n    \"\"\"\n    crawl4ai_url = os.getenv('CRAWL4AI_URL', '${config.crawl4ai_url}')\n    response = httpx.post(\n        f'{crawl4ai_url}/crawl',\n        json={\n            'urls': urls,\n            'extraction_strategy': extraction_strategy,\n            'word_count_threshold': word_count_threshold,\n            'bypass_cache': bypass_cache\n        },\n        timeout=300.0  # Longer timeout for batch operations\n    )\n    return response.json()`);\n}\n\n// n8n MCP integration\nlet mcpCode = '';\nif (config.enable_n8n_mcp && config.n8n_mcp_token) {\n  imports.push('from google.adk.tools.mcp_tool import McpToolset');\n  imports.push('from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams');\n  \n  mcpCode = `\n# n8n MCP integration\nn8n_mcp_toolset = McpToolset(\n    connection_params=StreamableHTTPServerParams(\n        url=f\"${config.n8n_url}/mcp-server/http\",\n        headers={\n            \"Authorization\": f\"Bearer ${config.n8n_mcp_token}\",\n        },\n    ),\n)`;\n}\n\n// Build tools list for agent\nlet toolsList = [];\nif (config.enable_qdrant_tools) {\n  toolsList.push('list_collections', 'get_collection_info', 'create_collection', 'search_collection');\n}\nif (config.enable_ollama_tools) {\n  toolsList.push('ollama_generate');\n}\nif (config.enable_crawl4ai_tools) {\n  toolsList.push('crawl4ai_scrape', 'crawl4ai_batch_scrape');\n}\nif (config.enable_n8n_mcp && config.n8n_mcp_token) {\n  toolsList.push('n8n_mcp_toolset');\n}\n\n// Generate complete agent code\nconst agentCode = `${imports.join('\\n')}\n\n${toolsCode.join('\\n\\n')}\n${mcpCode}\n\n# Create agent\nagent = Agent(\n    name='${agentName}',\n    model='${config.model_name}',\n    instruction=\"\"\"${config.agent_instruction}\"\"\",\n    tools=[${toolsList.join(', ')}]\n)\n\nif __name__ == '__main__':\n    from google.adk import run_agent\n    run_agent(agent)\n`;\n\n// Write agent file\nfs.writeFileSync(agentFile, agentCode, 'utf-8');\n\n// Create .env file for agent\nconst envFile = path.join(agentDir, `${agentName}.env`);\nconst envContent = `QDRANT_URL=${config.qdrant_url}\nOLLAMA_URL=${config.ollama_url}\nCRAWL4AI_URL=${config.crawl4ai_url}\nN8N_URL=${config.n8n_url}\nN8N_MCP_TOKEN=${config.n8n_mcp_token || ''}\nGOOGLE_API_KEY=${config.google_api_key || ''}\n`;\nfs.writeFileSync(envFile, envContent, 'utf-8');\n\nreturn {\n  json: {\n    success: true,\n    action: 'create',\n    agent_name: agentName,\n    agent_file: agentFile,\n    env_file: envFile,\n    tools_enabled: {\n      qdrant: config.enable_qdrant_tools,\n      ollama: config.enable_ollama_tools,\n      crawl4ai: config.enable_crawl4ai_tools,\n      n8n_mcp: config.enable_n8n_mcp\n    }\n  }\n};"
+      },
+      "id": "create-agent",
+      "name": "Create ADK Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 500],
+      "notes": "Generate ADK agent Python file with all tools and configuration"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Deploy ADK agent as systemd service\nconst { execSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\n\nconst config = $input.item.json;\nconst venvPath = config.venv_path;\nconst agentName = config.agent_name;\nconst agentFile = config.agent_file || path.join(config.agent_dir, `${agentName}.py`);\nconst agentPort = config.agent_port || 8000;\nconst deploymentMethod = config.deployment_method || 'systemd';\n\nlet output = [];\n\ntry {\n  if (deploymentMethod === 'systemd') {\n    // Create systemd service file\n    const serviceName = `adk-${agentName}`;\n    const serviceFile = `/etc/systemd/system/${serviceName}.service`;\n    \n    const envFile = path.join(path.dirname(agentFile), `${agentName}.env`);\n    const envFileExists = fs.existsSync(envFile);\n    \n    const serviceContent = `[Unit]\nDescription=ADK Agent: ${agentName}\nAfter=network.target docker.service\n\n[Service]\nType=simple\nUser=ec2-user\nWorkingDirectory=${path.dirname(agentFile)}\nExecStart=${venvPath}/bin/python -m google.adk.web --port ${agentPort} --agent-file ${agentFile}\nRestart=always\nRestartSec=10\n${envFileExists ? `EnvironmentFile=${envFile}` : ''}\nEnvironment=QDRANT_URL=${config.qdrant_url}\nEnvironment=OLLAMA_URL=${config.ollama_url}\nEnvironment=CRAWL4AI_URL=${config.crawl4ai_url}\nEnvironment=N8N_URL=${config.n8n_url}\n${config.n8n_mcp_token ? `Environment=N8N_MCP_TOKEN=${config.n8n_mcp_token}` : ''}\n${config.google_api_key ? `Environment=GOOGLE_API_KEY=${config.google_api_key}` : ''}\n\n[Install]\nWantedBy=multi-user.target\n`;\n    \n    // Write service file (requires sudo)\n    const tempServiceFile = `/tmp/${serviceName}.service`;\n    fs.writeFileSync(tempServiceFile, serviceContent, 'utf-8');\n    \n    output.push(`Creating systemd service: ${serviceName}`);\n    execSync(`sudo cp ${tempServiceFile} ${serviceFile}`, { encoding: 'utf-8' });\n    execSync(`sudo chmod 644 ${serviceFile}`, { encoding: 'utf-8' });\n    \n    // Reload systemd and enable/start service\n    output.push('Reloading systemd daemon...');\n    execSync('sudo systemctl daemon-reload', { encoding: 'utf-8' });\n    \n    output.push(`Enabling service ${serviceName}...`);\n    execSync(`sudo systemctl enable ${serviceName}.service`, { encoding: 'utf-8' });\n    \n    output.push(`Starting service ${serviceName}...`);\n    execSync(`sudo systemctl start ${serviceName}.service`, { encoding: 'utf-8' });\n    \n    // Check status\n    const statusResult = execSync(`sudo systemctl status ${serviceName}.service --no-pager`, {\n      encoding: 'utf-8',\n      stdio: 'pipe'\n    });\n    \n    output.push(`\\nService status:\\n${statusResult}`);\n    \n    return {\n      json: {\n        success: true,\n        action: 'deploy',\n        deployment_method: 'systemd',\n        service_name: serviceName,\n        agent_port: agentPort,\n        agent_file: agentFile,\n        output: output.join('\\n')\n      }\n    };\n  } else {\n    throw new Error(`Unsupported deployment method: ${deploymentMethod}`);\n  }\n} catch (error) {\n  return {\n    json: {\n      success: false,\n      action: 'deploy',\n      error: error.message,\n      output: output.join('\\n')\n    }\n  };\n}"
+      },
+      "id": "deploy-agent",
+      "name": "Deploy ADK Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 700],
+      "notes": "Deploy agent as systemd service"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1340, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": \"Action is required. Send POST with body: {\\\"action\\\": \\\"install|create|deploy\\\"}\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [680, 600]
+    }
+  ],
+  "connections": {
+    "Webhook - ADK Install/Deploy": {
+      "main": [
+        [
+          {
+            "node": "Set ADK Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set ADK Configuration": {
+      "main": [
+        [
+          {
+            "node": "Validate Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Action": {
+      "main": [
+        [
+          {
+            "node": "Check: Install",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check: Create",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check: Deploy",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Install": {
+      "main": [
+        [
+          {
+            "node": "Install ADK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Create": {
+      "main": [
+        [
+          {
+            "node": "Create ADK Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check: Deploy": {
+      "main": [
+        [
+          {
+            "node": "Deploy ADK Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Install ADK": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create ADK Agent": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy ADK Agent": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-01-01T00:00:00.000Z",
+  "versionId": "1"
+}
+

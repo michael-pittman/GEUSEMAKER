@@ -237,7 +237,34 @@ curl http://<public-ip>:11434/api/tags
 
 ### Configure n8n Credentials
 
-After deployment, you'll need to configure n8n credentials for the AI stack services:
+GeuseMaker **automatically preloads** n8n with PostgreSQL credentials during deployment, so workflows can run immediately without manual setup.
+
+#### Automatic Credential Preloading
+
+During deployment, GeuseMaker automatically:
+- ✅ Creates PostgreSQL credential (`postgres-local`) with connection details
+- ✅ Waits for n8n API to be ready before creating credentials
+- ✅ Handles authentication via owner API key or basic auth (if configured)
+
+**To enable automatic credential creation**, set one of these environment variables in your deployment config:
+
+```yaml
+# Option 1: Owner API key (recommended)
+custom_env:
+  N8N_USER_MANAGEMENT_OWNER_API_KEY: "your-api-key-here"
+
+# Option 2: Basic auth
+custom_env:
+  N8N_BASIC_AUTH_ACTIVE: "true"
+  N8N_BASIC_AUTH_USER: "admin"
+  N8N_BASIC_AUTH_PASSWORD: "your-password"
+```
+
+**If API authentication isn't configured**, credentials will be created manually after first n8n login. The deployment script will log instructions for manual setup.
+
+#### Manual Credential Configuration
+
+If automatic preloading didn't work or you need to add additional credentials:
 
 #### 1. **Ollama Connection** (Required for AI workflows)
 
@@ -253,16 +280,41 @@ In n8n, create a new **Ollama** credential:
 - Docker Compose automatically creates DNS resolution between containers
 - `localhost` inside the n8n container refers to itself, not other containers
 
-#### 2. **PostgreSQL Database** (Auto-configured)
+#### 2. **PostgreSQL Database** (Auto-configured & Preloaded)
 
-n8n is automatically configured to use PostgreSQL:
+n8n is automatically configured to use PostgreSQL, and the credential is **preloaded** during deployment:
+
+- **Credential Name**: `PostgreSQL Local` (ID: `postgres-local`)
 - **Host**: `postgres` (container name)
 - **Port**: `5432`
 - **Database**: `geusemaker`
 - **User**: `geusemaker`
 - **Password**: Set during deployment (from `postgres_password` config)
 
-**No manual configuration needed** - this is handled automatically by GeuseMaker.
+**✅ Credential is automatically created** - workflows referencing `postgres-local` will work immediately.
+
+**To verify credential was created:**
+1. Log into n8n UI: `http://<public-ip>:5678`
+2. Go to **Credentials** → Look for "PostgreSQL Local"
+3. If missing, see "Manual Credential Setup" below
+
+**To retrieve the PostgreSQL password** (if needed for direct database access):
+```bash
+# Get the public IP of your instance
+PUBLIC_IP=$(geusemaker status <stack-name> --output json | jq -r '.data.instance.public_ip')
+
+# SSH to the instance
+ssh -i ~/.ssh/key.pem ubuntu@$PUBLIC_IP  # or ec2-user@ for Amazon Linux
+
+# Get password from Docker container environment
+docker exec n8n env | grep POSTGRES_PASSWORD
+
+# Or from PostgreSQL container directly
+docker exec postgres env | grep POSTGRES_PASSWORD
+
+# Or print just the password value
+docker exec postgres printenv POSTGRES_PASSWORD
+```
 
 #### 3. **Qdrant Connection** (Optional, for vector workflows)
 
@@ -285,6 +337,29 @@ n8n automatically generates an encryption key (`N8N_ENCRYPTION_KEY`) during depl
 - Stored in `/mnt/efs/runtime.env` on the EC2 instance
 - Used to encrypt all credentials stored in n8n workflows
 - **Critical**: If you lose this key, you cannot decrypt existing credentials
+
+#### Troubleshooting Credential Preloading
+
+If credentials weren't automatically created, check the deployment logs:
+
+```bash
+# View credential preloading logs
+geusemaker logs my-stack | grep -i credential
+
+# Or SSH to instance and check
+ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
+tail -100 /var/log/geusemaker-userdata.log | grep -i credential
+```
+
+**Common issues:**
+- **n8n API not ready**: Wait a few minutes after deployment, then manually create credentials
+- **Authentication not configured**: Set `N8N_USER_MANAGEMENT_OWNER_API_KEY` or basic auth env vars
+- **Credential already exists**: Safe to ignore - existing credential will be used
+
+**Manual credential creation** (if automatic preloading failed):
+1. Log into n8n: `http://<public-ip>:5678`
+2. Go to **Credentials** → **Add Credential** → **PostgreSQL**
+3. Use connection details from "PostgreSQL Database" section above
 
 **To view the encryption key** (if needed for backup):
 ```bash

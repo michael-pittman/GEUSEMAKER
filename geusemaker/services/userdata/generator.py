@@ -48,6 +48,7 @@ class UserDataGenerator:
             services_tmpl = self._env.get_template("services.sh.j2")
             nginx_setup_tmpl = self._env.get_template("nginx-setup.sh.j2")
             healthcheck_tmpl = self._env.get_template("healthcheck.sh.j2")
+            n8n_credentials_tmpl = self._env.get_template("n8n-credentials.sh.j2")
             ollama_models_tmpl = self._env.get_template("ollama-models.sh.j2")
 
             # Convert config to dict for template rendering and backfill runtime bundle when requested
@@ -60,7 +61,8 @@ class UserDataGenerator:
             # Render each section
             # GPU validation runs after base setup but before Docker (NVIDIA drivers must be present)
             # NGINX setup runs after Docker services (requires container hostnames for validation)
-            # Model preloading runs after healthcheck in background (non-blocking)
+            # Credential preloading runs after healthcheck (requires n8n API to be ready)
+            # Model preloading runs after credentials in background (non-blocking)
             sections = [
                 base_tmpl.render(context),
                 gpu_tmpl.render(context),
@@ -69,6 +71,7 @@ class UserDataGenerator:
                 services_tmpl.render(context),
                 nginx_setup_tmpl.render(context),
                 healthcheck_tmpl.render(context),
+                n8n_credentials_tmpl.render(context),
                 ollama_models_tmpl.render(context),
             ]
 

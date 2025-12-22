@@ -29,7 +29,7 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [460, 300],
-      "notes": "Change the model_name value to pull different models (e.g., znbang/bge:small-en-v1.5, all-minilm)"
+      "notes": "Change the model_name value to pull different models (e.g., znbang/bge:small-en-v1.5, all-minilm, llama3.2:3b)"
     },
     {
       "parameters": {
@@ -39,9 +39,14 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"name\": \"{{ $json.model_name }}\",\n  \"stream\": false\n}",
+        "jsonBody": "={{ {\n  \"name\": $json.model_name,\n  \"stream\": false\n} }}",
         "options": {
-          "timeout": 3600000
+          "timeout": 3600000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
         }
       },
       "id": "pull-model",
@@ -49,21 +54,30 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [680, 300],
-      "notes": "Pulls model from Ollama. Set timeout high for large models."
+      "notes": "Pulls model from Ollama with 1-hour timeout. Retries up to 3 times on network failures.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": false
     },
     {
       "parameters": {
         "method": "GET",
         "url": "http://ollama:11434/api/tags",
         "authentication": "none",
-        "options": {}
+        "options": {
+          "timeout": 30000
+        }
       },
       "id": "list-models",
       "name": "List All Models",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [900, 300],
-      "notes": "Lists all installed models to verify the pull was successful"
+      "notes": "Lists all installed models to verify the pull was successful",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     }
   ],
   "connections": {
@@ -108,6 +122,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2024-01-01T00:00:00.000Z",
-  "versionId": "1"
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "2"
 }

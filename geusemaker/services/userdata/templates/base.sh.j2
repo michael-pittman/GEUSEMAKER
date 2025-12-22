@@ -31,13 +31,14 @@ rm -f "$ERROR_GUARD"
 
 # Error handler
 handle_error() {
-    echo "ERROR: UserData script failed at line $1"
+    local line_num="${1:-unknown}"
+    echo "ERROR: UserData script failed at line $line_num"
     echo "Check $LOGFILE for details"
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): failed at line $1" > "$ERROR_GUARD"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): failed at line $line_num" > "$ERROR_GUARD"
     exit 1
 }
 
-trap 'handle_error $LINENO' ERR
+trap 'handle_error ${LINENO:-unknown}' ERR
 
 echo "Starting GeuseMaker initialization..."
 

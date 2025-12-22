@@ -1,0 +1,587 @@
+{
+  "name": "AI-Powered Qdrant Vector Database Manager",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "mode": "hostedChat",
+        "options": {
+          "title": "🗄️ Qdrant Database Manager",
+          "subtitle": "Manage your Qdrant vector collections with natural language commands",
+          "inputPlaceholder": "Ask me to create, search, or manage collections...",
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "chat-trigger",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [240, 400],
+      "notes": "Conversational interface for Qdrant management"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are an expert Qdrant vector database administrator. You help users manage their Qdrant collections through natural language commands.\n\nYou can:\n- Create new collections with custom configurations\n- List all collections and their stats\n- Search for similar vectors in collections\n- Insert documents and generate embeddings\n- Delete collections or specific points\n- Get collection information and statistics\n\nWhen users ask to create collections, suggest sensible defaults:\n- Vector size: 768 (for nomic-embed-text)\n- Distance metric: Cosine (most common for semantic search)\n\nAlways confirm destructive operations (delete) before executing.\nProvide clear, helpful responses with collection names, point counts, and relevant details.",
+          "maxIterations": 10
+        }
+      },
+      "id": "qdrant-agent",
+      "name": "Qdrant Management Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "model": "qwen2.5:1.5b-instruct",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "ollama-chat",
+      "name": "Ollama Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollama-local",
+          "name": "Ollama Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "list_collections",
+        "description": "List all Qdrant collections with their statistics (point count, vector size, distance metric)",
+        "method": "GET",
+        "url": "http://qdrant:6333/collections",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "tool-list-collections",
+      "name": "Tool: List Collections",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {
+        "name": "get_collection_info",
+        "description": "Get detailed information about a specific Qdrant collection. Required parameter: collection_name (string)",
+        "method": "GET",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "collection_name",
+              "description": "Name of the collection to get info about"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "tool-get-collection",
+      "name": "Tool: Get Collection Info",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [680, 620]
+    },
+    {
+      "parameters": {
+        "name": "create_collection",
+        "description": "Create a new Qdrant collection. Required parameters: collection_name (string), vector_size (number, default 768), distance (string: 'Cosine', 'Euclid', or 'Dot', default 'Cosine')",
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vectors\": {\n    \"size\": {{ $json.vector_size || 768 }},\n    \"distance\": \"{{ $json.distance || 'Cosine' }}\"\n  }\n}",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "collection_name",
+              "description": "Name for the new collection"
+            },
+            {
+              "name": "vector_size",
+              "description": "Dimension of vectors (default: 768 for nomic-embed-text)"
+            },
+            {
+              "name": "distance",
+              "description": "Distance metric: Cosine, Euclid, or Dot (default: Cosine)"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "tool-create-collection",
+      "name": "Tool: Create Collection",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [680, 740]
+    },
+    {
+      "parameters": {
+        "name": "delete_collection",
+        "description": "Delete a Qdrant collection permanently. Required parameter: collection_name (string). This is destructive and cannot be undone!",
+        "method": "DELETE",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "collection_name",
+              "description": "Name of the collection to delete"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "tool-delete-collection",
+      "name": "Tool: Delete Collection",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [680, 860]
+    },
+    {
+      "parameters": {
+        "name": "search_collection",
+        "description": "Search for similar vectors in a collection using semantic search. Required parameters: collection_name (string), query_text (string), limit (number, default 5)",
+        "mode": "runOnceForAllItems",
+        "jsCode": "// This tool embeds the query text and searches Qdrant\nconst collectionName = $input.item.json.collection_name;\nconst queryText = $input.item.json.query_text;\nconst limit = $input.item.json.limit || 5;\n\nif (!collectionName || !queryText) {\n  throw new Error('collection_name and query_text are required');\n}\n\n// Step 1: Generate embedding using Ollama\nconst embedResponse = await fetch('http://ollama:11434/api/embed', {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/json' },\n  body: JSON.stringify({\n    model: 'nomic-embed-text',\n    input: queryText\n  })\n});\n\nconst embedData = await embedResponse.json();\nconst embedding = embedData.embeddings?.[0] || embedData.embedding;\n\nif (!embedding) {\n  throw new Error('Failed to generate embedding');\n}\n\n// Step 2: Search Qdrant\nconst searchResponse = await fetch(`http://qdrant:6333/collections/${collectionName}/points/search`, {\n  method: 'POST',\n  headers: { 'Content-Type': 'application/json' },\n  body: JSON.stringify({\n    vector: embedding,\n    limit: limit,\n    with_payload: true,\n    score_threshold: 0.5\n  })\n});\n\nconst searchData = await searchResponse.json();\n\nreturn {\n  json: {\n    collection: collectionName,\n    query: queryText,\n    results: searchData.result || [],\n    count: searchData.result?.length || 0\n  }\n};"
+      },
+      "id": "tool-search",
+      "name": "Tool: Search Collection",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1,
+      "position": [680, 980]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger-setup-prerequisites",
+      "name": "Manual Trigger - Setup Prerequisites",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 1050],
+      "notes": "🚀 QUICK START: Creates 'web-scrapes' collection for workflow 04"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "collection-name",
+              "name": "collection_name",
+              "value": "web-scrapes",
+              "type": "string"
+            },
+            {
+              "id": "vector-size",
+              "name": "vector_size",
+              "value": "768",
+              "type": "number"
+            },
+            {
+              "id": "distance",
+              "name": "distance",
+              "value": "Cosine",
+              "type": "string"
+            },
+            {
+              "id": "description",
+              "name": "description",
+              "value": "Collection for web scraping RAG ingestion (workflow 04)",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "preset-web-scrapes",
+      "name": "Preset: web-scrapes Collection",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 1050],
+      "notes": "Preset for workflow 04 (AI Web → Qdrant RAG Ingestion)"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vectors\": {\n    \"size\": {{ $json.vector_size }},\n    \"distance\": \"{{ $json.distance }}\"\n  },\n  \"optimizers_config\": {\n    \"indexing_threshold\": 10000\n  },\n  \"hnsw_config\": {\n    \"m\": 16,\n    \"ef_construct\": 100\n  }\n}",
+        "options": {}
+      },
+      "id": "create-web-scrapes-collection",
+      "name": "Create web-scrapes Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 1050],
+      "notes": "Creates optimized collection for web scraping RAG"
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger-admin",
+      "name": "Manual Trigger - Custom Collection",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 1250],
+      "notes": "For custom Qdrant operations - edit parameters below"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "operation",
+              "name": "operation",
+              "value": "create",
+              "type": "string"
+            },
+            {
+              "id": "collection-name",
+              "name": "collection_name",
+              "value": "my-custom-collection",
+              "type": "string"
+            },
+            {
+              "id": "vector-size",
+              "name": "vector_size",
+              "value": "768",
+              "type": "number"
+            },
+            {
+              "id": "distance",
+              "name": "distance",
+              "value": "Cosine",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-admin-params",
+      "name": "Set Custom Parameters",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 1250],
+      "notes": "✏️ EDIT HERE: Change operation (create/list/delete) and collection settings"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "create",
+              "leftValue": "={{ $json.operation }}",
+              "rightValue": "create",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch-operation",
+      "name": "Route Operation",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [680, 1250]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vectors\": {\n    \"size\": {{ $json.vector_size }},\n    \"distance\": \"{{ $json.distance }}\"\n  },\n  \"optimizers_config\": {\n    \"indexing_threshold\": 10000\n  }\n}",
+        "options": {}
+      },
+      "id": "create-collection-direct",
+      "name": "Create Collection (Direct)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 1150]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://qdrant:6333/collections",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "list-collections-direct",
+      "name": "List Collections (Direct)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 1250]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "=http://qdrant:6333/collections/{{ $json.collection_name }}",
+        "authentication": "none",
+        "options": {}
+      },
+      "id": "delete-collection-direct",
+      "name": "Delete Collection (Direct)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 1350]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger-ingest",
+      "name": "Manual Trigger - Document Ingestion",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 1600],
+      "notes": "Ingest documents into Qdrant with embeddings"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "text",
+              "name": "text",
+              "value": "Sample document about AI and machine learning.",
+              "type": "string"
+            },
+            {
+              "id": "collection",
+              "name": "collection_name",
+              "value": "knowledge-base",
+              "type": "string"
+            },
+            {
+              "id": "metadata",
+              "name": "metadata",
+              "value": "={{ { \"source\": \"manual\", \"timestamp\": new Date().toISOString() } }}",
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "id": "set-document",
+      "name": "Set Document to Ingest",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 1600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embed",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"nomic-embed-text\",\n  \"input\": \"{{ $json.text }}\"\n}",
+        "options": {}
+      },
+      "id": "generate-embedding",
+      "name": "Generate Embedding (Ollama)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [680, 1600]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://qdrant:6333/collections/{{ $('Set Document to Ingest').item.json.collection_name }}/points",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"points\": [\n    {\n      \"id\": \"{{ Date.now() }}-{{ Math.random().toString(36).substring(7) }}\",\n      \"vector\": {{ JSON.stringify($json.embeddings?.[0] || $json.embedding) }},\n      \"payload\": {\n        \"text\": \"{{ $('Set Document to Ingest').item.json.text }}\",\n        \"metadata\": {{ JSON.stringify($('Set Document to Ingest').item.json.metadata) }}\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "insert-point",
+      "name": "Insert into Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [900, 1600]
+    }
+  ],
+  "connections": {
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Qdrant Management Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger - Setup Prerequisites": {
+      "main": [
+        [
+          {
+            "node": "Preset: web-scrapes Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preset: web-scrapes Collection": {
+      "main": [
+        [
+          {
+            "node": "Create web-scrapes Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qdrant Management Agent": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Ollama Chat Model",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ],
+      "ai_tool": [
+        [
+          {
+            "node": "Tool: List Collections",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Tool: Get Collection Info",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Tool: Create Collection",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Tool: Delete Collection",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "Tool: Search Collection",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger - Custom Collection": {
+      "main": [
+        [
+          {
+            "node": "Set Custom Parameters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Custom Parameters": {
+      "main": [
+        [
+          {
+            "node": "Route Operation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Operation": {
+      "main": [
+        [
+          {
+            "node": "Create Collection (Direct)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "List Collections (Direct)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Collection (Direct)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger - Document Ingestion": {
+      "main": [
+        [
+          {
+            "node": "Set Document to Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Document to Ingest": {
+      "main": [
+        [
+          {
+            "node": "Generate Embedding (Ollama)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embedding (Ollama)": {
+      "main": [
+        [
+          {
+            "node": "Insert into Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 4,
+  "updatedAt": "2025-12-20T00:00:00.000Z",
+  "versionId": "3"
+}

@@ -34,14 +34,15 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Split comma-separated model names into array\nconst models = $input.item.json.models.split(',').map(m => m.trim());\nreturn models.map(model => ({ json: { model_name: model } }));"
+        "language": "javaScript",
+        "jsCode": "// Split comma-separated model names into array with error handling\ntry {\n  const modelsInput = $input.item.json.models;\n  \n  if (!modelsInput || typeof modelsInput !== 'string') {\n    throw new Error('models field must be a non-empty string');\n  }\n  \n  const models = modelsInput.split(',').map(m => m.trim()).filter(m => m.length > 0);\n  \n  if (models.length === 0) {\n    throw new Error('No valid model names provided');\n  }\n  \n  return models.map(model => ({ json: { model_name: model } }));\n} catch (error) {\n  // Return error as item for downstream handling\n  return [{ json: { error: error.message, model_name: null } }];\n}"
       },
       "id": "split-models",
       "name": "Split Models",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [680, 300],
-      "notes": "Splits the comma-separated list into individual model names"
+      "notes": "Splits the comma-separated list into individual model names with validation"
     },
     {
       "parameters": {
@@ -51,9 +52,14 @@
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
-        "jsonBody": "={\n  \"name\": \"{{ $json.model_name }}\",\n  \"stream\": false\n}",
+        "jsonBody": "={{ {\n  \"name\": $json.model_name,\n  \"stream\": false\n} }}",
         "options": {
-          "timeout": 3600000
+          "timeout": 3600000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
         }
       },
       "id": "pull-model",
@@ -61,21 +67,30 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [900, 300],
-      "notes": "Pulls each model sequentially. Large models may take several minutes each."
+      "notes": "Pulls each model with 1-hour timeout. Retries on failure (network issues, timeouts).",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "continueOnFail": true
     },
     {
       "parameters": {
         "method": "GET",
         "url": "http://ollama:11434/api/tags",
         "authentication": "none",
-        "options": {}
+        "options": {
+          "timeout": 30000
+        }
       },
       "id": "list-final-models",
       "name": "List Final Models",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [1120, 300],
-      "notes": "Lists all installed models after batch pull completes"
+      "notes": "Lists all installed models after batch pull completes",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     }
   ],
   "connections": {
@@ -131,6 +146,6 @@
   "staticData": null,
   "tags": [],
   "triggerCount": 1,
-  "updatedAt": "2024-01-01T00:00:00.000Z",
-  "versionId": "1"
+  "updatedAt": "2025-01-20T00:00:00.000Z",
+  "versionId": "2"
 }
