@@ -1,9 +1,9 @@
 # GeuseMaker Epics and Stories Summary
 
 **Generated:** 2025-11-21
-**Last Updated:** 2025-12-08
+**Last Updated:** 2025-12-21
 **Codebase Review Date:** 2025-12-08
-**Status Snapshot:** 13 epics / 55 stories — Draft: 1 epic, 11 stories; In Progress: 2 epics, 0 stories; Ready: 1 epic, 0 stories; Done: 10 epics, 44 stories
+**Status Snapshot:** 14 epics / 59 stories — Draft: 1 epic, 15 stories; In Progress: 2 epics, 0 stories; Ready: 1 epic, 0 stories; Done: 10 epics, 44 stories
 
 **✅ RECENT COMPLETIONS (2025-12-08):**
 - **Epic 12 Complete:** Tier 2 ALB orchestration fully implemented
@@ -11,6 +11,12 @@
   - ALB cleanup added to DestructionService
   - 5 new unit tests, all 212 tests passing
 - **Next:** Tier 3 GPU/CloudFront orchestration (Epic 13)
+
+**📋 NEWLY DESIGNED (2025-12-21):**
+- **Epic 14:** ComfyUI Integration for LTX-2 Video Generation
+  - Designed integration for ComfyUI service with LTX-2 custom nodes
+  - Requires GPU tier deployments (Epic 13)
+  - 4 stories covering service integration, health checks, LTX-2 setup, and NGINX proxy
 
 **✅ Codebase Health:** Grade **A**
 - 100% test pass rate (212 tests, +5 from Tier2Orchestrator)
@@ -26,7 +32,7 @@
   - Tests: `tests/unit/test_orchestration/test_tier2.py` (437 LOC, 5 tests)
 - ALB Service expanded: 42 → 274 LOC with 5 new methods
 
-**Note:** Story statuses are taken from the individual story files. Epics 1–9 are complete. Epics 11–13 are partially complete (services implemented, orchestrators pending).
+**Note:** Story statuses are taken from the individual story files. Epics 1–9 are complete. Epics 11–13 are partially complete (services implemented, orchestrators pending). Epic 14 (ComfyUI/LTX-2) is newly designed and pending implementation.
 
 **Terminology Clarification:** `RollbackService` handles versioned state rollbacks, while orchestrator cleanup (`Tier1Orchestrator._cleanup_partial_deployment`) deletes partial resources after failures. Use the former for restoring prior configs; rely on the latter for failure cleanup.
 
@@ -191,6 +197,18 @@
 
 ---
 
+## Epic 14: ComfyUI Integration for LTX-2 Video Generation
+**Status:** Draft (stories Draft: 4, In Progress: 0, Done: 0)  
+**Goal:** Integrate ComfyUI service with LTX-2 custom nodes for video generation workflows in GPU deployments.  
+**Stories:**
+- **14.1** 📋 ComfyUI Service Integration — Add ComfyUI container to Docker Compose, configure EFS volumes for models/outputs, add port configuration to UserDataConfig, update services template for ComfyUI deployment (Draft).
+- **14.2** 📋 ComfyUI Health Checks and Monitoring — Add ComfyUI health check function, integrate into health service, update default health check configs, add to status command output (Draft).
+- **14.3** 📋 LTX-2 Custom Nodes Setup — Create ComfyUI setup script template, install ComfyUI Manager, install LTX-2 node pack, configure for GPU tier deployments only, add to UserData generation pipeline (Draft).
+- **14.4** 📋 NGINX Proxy Configuration for ComfyUI — Add ComfyUI reverse proxy location block, configure WebSocket support for real-time updates, set extended timeouts for video generation (30 min), increase client body size for model uploads (10G) (Draft).  
+**Dependencies:** Requires Epic 4 (Deployment Lifecycle) and Epic 13 (GPU Support). ComfyUI/LTX-2 requires GPU instances for video generation workloads.
+
+---
+
 ## File Locations
 
 - Epic files: `docs/epics/epic-{number}-{name}.md`
@@ -272,6 +290,15 @@
   - Test with actual GPU workloads (g4dn.xlarge)
 - **Deliverable**: GPU-enabled, globally distributed deployments
 
+**Priority 10: Epic 14 - ComfyUI Integration for LTX-2** (1-2 weeks)
+- **Dependencies**: Epic 4 (Deployment Lifecycle), Epic 13 (GPU Support)
+- **Tasks**:
+  - **Story 14.1**: Add ComfyUI service to Docker Compose, configure EFS volumes, update UserDataConfig model with `comfyui_port` field, update services template
+  - **Story 14.2**: Add ComfyUI health check function, integrate into health service, update status command
+  - **Story 14.3**: Create ComfyUI setup script template, install ComfyUI Manager and LTX-2 nodes, configure for GPU tier only
+  - **Story 14.4**: Add NGINX reverse proxy configuration for ComfyUI with WebSocket support and extended timeouts
+- **Deliverable**: ComfyUI service with LTX-2 video generation support for GPU deployments
+
 ### 🔒 LONG-TERM (Month 4-6) - Security & Compliance
 
 **Priority 8: Epic 10 - Security & Compliance** (2-3 weeks)
@@ -332,10 +359,11 @@
 
 - Epic 1 → enables Epics 2, 3, 4, and 7.
 - Epics 2 and 3 → required alongside Epic 1 to deliver Epics 4 and 8.
-- Epic 4 → prerequisite for Epics 5, 6, 8, 9, 10, 11, and 12.
+- Epic 4 → prerequisite for Epics 5, 6, 8, 9, 10, 11, 12, and 14.
 - Epic 5 → prerequisite for Epic 9.
 - **Story 11.4 (Error Handling)** → ✅ **COMPLETE** - Error handling and rollback implemented.
 - Epic 12 → prerequisite for Epic 13.
+- Epic 13 → prerequisite for Epic 14 (GPU support required for ComfyUI/LTX-2).
 
 ## Implementation Time Estimates
 
@@ -345,9 +373,10 @@
 | 2 | Story 4.10 (DL AMI Support) | ✅ Done | - |
 | 3 | Expand ALB Service | ✅ Done | - |
 | 4 | Expand CloudFront Service | ✅ Done | - |
-| 6 | Epic 12 (Tier 2 ALB) | 1-2 weeks | Month 1-2 |
+| 6 | Epic 12 (Tier 2 ALB) | ✅ Done | - |
 | 7 | Epic 13 (Tier 3 GPU/CDN) | 2-3 weeks | Month 2 |
 | 8 | Epic 10 (Security) | 2-3 weeks | Month 3 |
 | 9 | Epic 11 (Error Handling) | 1-2 weeks | Month 3 |
+| 10 | Epic 14 (ComfyUI/LTX-2) | 1-2 weeks | Month 3-4 |
 
-**Total**: ~2.5-3 months to complete all remaining features
+**Total**: ~3-3.5 months to complete all remaining features (including ComfyUI integration)
