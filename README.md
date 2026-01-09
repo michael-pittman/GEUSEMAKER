@@ -182,7 +182,50 @@ geusemaker logs my-ai-stack --service postgres
 # Available services: userdata, n8n, ollama, qdrant, crawl4ai, postgres
 ```
 
-#### Stream Logs Directly from Server
+#### Stream Logs Server-Side
+
+**Option 1: Using GeuseMaker CLI (SSM-based, no SSH required)**
+
+```bash
+# Stream UserData logs in real-time via AWS Systems Manager
+geusemaker logs my-ai-stack --follow
+
+# This uses SSM Session Manager under the hood - no SSH keys needed
+# Works as long as the instance has SSM agent running (auto-installed)
+```
+
+**Option 2: Using AWS Systems Manager Session Manager (No SSH)**
+
+```bash
+# Get instance ID
+INSTANCE_ID=$(geusemaker status my-ai-stack --output json | jq -r '.data.instance.instance_id')
+
+# Start SSM session (interactive shell)
+aws ssm start-session --target $INSTANCE_ID --region us-east-1
+
+# Once connected, stream logs:
+tail -f /var/log/geusemaker-userdata.log
+tail -f /var/log/geusemaker/model-preload.log
+docker logs -f n8n
+```
+
+**Option 3: SSM Run Command (One-time log fetch)**
+
+```bash
+# Get instance ID
+INSTANCE_ID=$(geusemaker status my-ai-stack --output json | jq -r '.data.instance.instance_id')
+
+# Stream UserData logs via SSM
+aws ssm send-command \
+  --instance-ids $INSTANCE_ID \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["tail -f /var/log/geusemaker-userdata.log"]' \
+  --region us-east-1
+
+# For continuous streaming, use Session Manager (Option 2) or GeuseMaker CLI (Option 1)
+```
+
+**Option 4: SSH Access (Traditional method)**
 
 If you have SSH access to the EC2 instance:
 
@@ -191,7 +234,7 @@ If you have SSH access to the EC2 instance:
 PUBLIC_IP=$(geusemaker status my-ai-stack --output json | jq -r '.data.instance.public_ip')
 
 # SSH to instance (replace key-pair.pem with your key)
-ssh -i ~/.ssh/key-pair.pem ec2-user@$PUBLIC_IP
+ssh -i ~/.ssh/key-pair.pem ec2-user@$PUBLIC_IP  # or ubuntu@ for Ubuntu
 
 # Stream UserData logs (initialization progress)
 tail -f /var/log/geusemaker-userdata.log
@@ -209,7 +252,36 @@ docker logs -f postgres
 # View all logs at once (advanced)
 tail -f /var/log/geusemaker-userdata.log \
          /var/log/geusemaker/model-preload.log
+
+# Stream multiple containers simultaneously
+docker logs -f n8n ollama qdrant
 ```
+
+**Option 5: Real-time Multi-Log Monitoring**
+
+For comprehensive server-side monitoring:
+
+```bash
+# SSH to instance first
+ssh -i ~/.ssh/key-pair.pem ec2-user@$PUBLIC_IP
+
+# Use multitail (install: sudo yum install multitail or sudo apt install multitail)
+multitail /var/log/geusemaker-userdata.log \
+          /var/log/geusemaker/model-preload.log \
+          /var/log/amazon/efs/mount.log
+
+# Or use tmux/screen with split panes
+tmux new-session -d -s logs
+tmux split-window -h 'tail -f /var/log/geusemaker-userdata.log'
+tmux split-window -v 'tail -f /var/log/geusemaker/model-preload.log'
+tmux split-window -v 'docker logs -f n8n'
+tmux attach -t logs
+```
+
+**Recommended Approach:**
+- **During deployment**: Use `geusemaker logs my-ai-stack --follow` (Option 1)
+- **Post-deployment debugging**: Use SSM Session Manager (Option 2) - no SSH keys needed
+- **Advanced monitoring**: Use SSH with multitail/tmux (Options 4-5)
 
 ### Access Services
 
