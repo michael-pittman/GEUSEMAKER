@@ -256,6 +256,16 @@ class StubSSMService:
         self.waited_for_userdata = True
         return self.userdata_status
 
+    def run_shell_script(
+        self,
+        instance_id: str,  # noqa: ARG002
+        commands: list[str],
+        comment: str = "",  # noqa: ARG002
+        timeout_seconds: int = 180,  # noqa: ARG002
+    ) -> dict:
+        self.last_shell_commands = commands
+        return {"Status": "Success"}
+
 
 class StubALBService:
     """Stub ALB service capturing creation and health checks."""

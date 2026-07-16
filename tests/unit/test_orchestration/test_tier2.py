@@ -94,6 +94,26 @@ def test_tier2_orchestrator_creates_alb_when_enabled() -> None:
     assert "elb.amazonaws.com" in state.alb_dns
 
 
+def test_tier2_n8n_url_patch_script_is_bash() -> None:
+    """The SSM patch uses bashisms; SSM defaults to /bin/sh (dash) without a shebang."""
+    orchestrator = Tier2Orchestrator(client_factory=None, region="us-east-1", state_manager=StubStateManager())  # type: ignore[arg-type]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
+
+    orchestrator._best_effort_configure_n8n_public_url(
+        instance_id="i-123",
+        host="example.com",
+        protocol="https",
+        proxy_hops=1,
+    )
+
+    commands = orchestrator.ssm_service.last_shell_commands  # type: ignore[attr-defined]
+    assert commands[0] == "#!/bin/bash"
+    joined = "\n".join(commands)
+    # The env must be exported so compose interpolation and environment: entries work.
+    assert "set -a" in joined
+    assert "--force-recreate n8n" in joined
+
+
 def test_tier2_orchestrator_skips_alb_when_disabled() -> None:
     """Test that Tier2Orchestrator skips ALB creation when enable_alb=False."""
     config = DeploymentConfig(

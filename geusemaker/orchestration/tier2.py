@@ -235,6 +235,9 @@ class Tier2Orchestrator(Tier1Orchestrator):
             # Prefer runtime bundle location when present.
             # UserData uses COMPOSE_FILE_PATH in /root (no bundle) or /opt/geusemaker/runtime (bundle).
             cmd_lines = [
+                # SSM runs scripts with /bin/sh (dash on Ubuntu) unless a shebang says
+                # otherwise; the script below uses bashisms (pipefail, set -a).
+                "#!/bin/bash",
                 "set -euo pipefail",
                 'if [ -f /opt/geusemaker/runtime/runtime.env ]; then ENV_FILE="/opt/geusemaker/runtime/runtime.env"; COMPOSE_FILE="/opt/geusemaker/runtime/docker-compose.yml"; '
                 'else ENV_FILE="/root/runtime.env"; COMPOSE_FILE="/root/docker-compose.yml"; fi',
