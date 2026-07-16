@@ -75,7 +75,11 @@ else
             TMP_EFS_DIR=$(mktemp -d)
             echo "Cloning efs-utils repository to $TMP_EFS_DIR..."
 
-            if ! git clone --depth 1 https://github.com/aws/efs-utils "$TMP_EFS_DIR" 2>&1; then
+            # Pin to v1.36.0: efs-utils v2.x requires cargo >= 1.78 (Cargo.lock v4),
+            # which Ubuntu LTS repos do not ship, so master fails to build. v1.x is
+            # Python + stunnel (stunnel4 is already installed in base.sh.j2) and
+            # supports the tls,iam mount options we use.
+            if ! git clone --depth 1 --branch v1.36.0 https://github.com/aws/efs-utils "$TMP_EFS_DIR" 2>&1; then
                 echo "ERROR: Failed to clone efs-utils repository"
                 rm -rf "$TMP_EFS_DIR"
                 exit 1

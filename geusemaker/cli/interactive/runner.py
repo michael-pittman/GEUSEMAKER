@@ -94,10 +94,30 @@ class DeploymentRunner:
                         )
                     )
 
-            console.print(
-                f"\n{EMOJI['check']} UserData initialization complete!",
-                verbosity="info",
-            )
+            # The stream also ends on error-guard detection or timeout, so check the
+            # actual outcome instead of unconditionally declaring success.
+            try:
+                final_status = ssm_service.get_userdata_status(state.instance_id)
+            except RuntimeError:
+                final_status = "unknown"
+
+            if final_status == "success":
+                console.print(
+                    f"\n{EMOJI['check']} UserData initialization complete!",
+                    verbosity="info",
+                )
+            elif final_status == "error":
+                console.print(
+                    f"\n{EMOJI['error']} UserData initialization FAILED — services did not start. "
+                    f"Inspect with: geusemaker logs {state.stack_name}",
+                    verbosity="error",
+                )
+            else:
+                console.print(
+                    f"\n{EMOJI['warning']} UserData still initializing (status: {final_status}). "
+                    f"Check progress with: geusemaker logs {state.stack_name} --follow",
+                    verbosity="warning",
+                )
 
         except RuntimeError as exc:
             console.print(

@@ -152,6 +152,36 @@ class SSMService(BaseService):
             time.sleep(poll_interval)
         return "timeout"
 
+    def get_userdata_status(self, instance_id: str) -> str:
+        """One-shot check of the UserData guard files (no waiting).
+
+        Returns:
+            "success" when the completion guard exists,
+            "error" when the error guard exists,
+            "running" when neither is present yet.
+        """
+        guard_file = "/var/lib/geusemaker/userdata-complete"
+        error_guard = "/var/lib/geusemaker/userdata-error"
+        command_id = self.send_shell_commands(
+            instance_id,
+            [
+                (
+                    f"if [ -f {guard_file} ]; then echo 'exists'; "
+                    f"elif [ -f {error_guard} ]; then echo 'error'; "
+                    "else echo 'not_found'; fi"
+                )
+            ],
+            comment="Check UserData status",
+            timeout_seconds=30,
+        )
+        result = self.wait_for_command(command_id, instance_id, timeout_seconds=30)
+        output = result.get("StandardOutputContent", "").strip()
+        if output == "exists":
+            return "success"
+        if output == "error":
+            return "error"
+        return "running"
+
     def fetch_userdata_logs(
         self,
         instance_id: str,

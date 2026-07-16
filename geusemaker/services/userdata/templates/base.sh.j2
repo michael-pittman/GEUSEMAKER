@@ -40,6 +40,18 @@ handle_error() {
 
 trap 'handle_error ${LINENO:-unknown}' ERR
 
+# Explicit `exit 1` in included templates bypasses the ERR trap, so also hook
+# EXIT: any nonzero exit without a completion guard must leave the error guard,
+# or the orchestrator cannot tell a failed init from a successful one.
+handle_exit() {
+    local status=$?
+    if [ "$status" -ne 0 ] && [ ! -f "$GUARD_FILE" ] && [ ! -f "$ERROR_GUARD" ]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): exited with status $status" > "$ERROR_GUARD"
+    fi
+}
+
+trap handle_exit EXIT
+
 echo "Starting GeuseMaker initialization..."
 
 # Runtime bundle setup (optional)
