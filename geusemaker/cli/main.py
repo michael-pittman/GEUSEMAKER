@@ -7,7 +7,7 @@ import click
 
 from geusemaker import __version__
 from geusemaker.cli import VerbosityLevel, console, set_verbosity
-from geusemaker.cli.branding import EMOJI, MAIN_BANNER
+from geusemaker.cli.branding import MAIN_BANNER
 from geusemaker.cli.commands.backup import backup_group
 from geusemaker.cli.commands.cleanup import cleanup
 from geusemaker.cli.commands.cost import cost
@@ -26,6 +26,7 @@ from geusemaker.cli.commands.rollback import rollback
 from geusemaker.cli.commands.status import status
 from geusemaker.cli.commands.update import update
 from geusemaker.cli.commands.validate import validate
+from geusemaker.cli.output import set_machine_output
 from geusemaker.infra import AWSClientFactory
 
 
@@ -39,7 +40,7 @@ def _resolve_version() -> str:
 
 @click.group(invoke_without_command=True)
 @click.version_option(version=_resolve_version(), prog_name="geusemaker")
-@click.option("--silent", is_flag=True, default=False, help="Suppress non-error output.")
+@click.option("--silent", is_flag=True, default=False, help="Errors only: suppress all other output.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show verbose/debug output.")
 @click.option(
     "--profile",
@@ -60,6 +61,10 @@ def cli(ctx: click.Context, silent: bool, verbose: bool, profile: str | None) ->
     else:
         set_verbosity(VerbosityLevel.NORMAL)
 
+    # Reset machine-output before subcommand option parsing; the shared --output
+    # option re-enables it for json/yaml (state must not leak between in-process runs).
+    set_machine_output(False)
+
     AWSClientFactory.set_default_profile(profile)
 
     ctx.obj = {
@@ -70,11 +75,9 @@ def cli(ctx: click.Context, silent: bool, verbose: bool, profile: str | None) ->
     }
 
     if ctx.invoked_subcommand is None and not silent:
+        # Show the command list immediately instead of pointing at --help.
         console.print(f"[bold cyan]{MAIN_BANNER}[/bold cyan]", verbosity="info")
-        console.print(
-            f"{EMOJI['spark']} Welcome to GeuseMaker! Run `geusemaker --help` to see available commands.",
-            verbosity="info",
-        )
+        click.echo(ctx.get_help())
 
 
 cli.add_command(deploy)

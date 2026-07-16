@@ -12,7 +12,7 @@
 🚀 **Fast Deployment** - Interactive wizard with real-time cost preview
 📊 **Monitoring Built-in** - Health checks, log streaming, deployment status
 🔒 **Secure by Default** - IAM-based EFS authentication, VPC isolation
-🎯 **Three Tiers** - Dev (Tier 1), Production (Tier 2 with ALB), GPU (Tier 3 planned)
+🎯 **Three Tiers** - `dev` (Tier 1: direct public IP), `automation` (Tier 2: ALB + ACM HTTPS), `gpu` (Tier 3: ALB + CloudFront CDN)
 
 ## Quick Start
 
@@ -42,7 +42,7 @@ geusemaker deploy
 # The wizard will guide you through:
 # 1. Stack naming
 # 2. Region selection
-# 3. Tier choice (1=Dev, 2=Production, 3=GPU)
+# 3. Tier choice (1=dev, 2=automation, 3=gpu)
 # 4. Instance type and spot preferences
 # 5. Network configuration (VPC/subnet/security group)
 # 6. Cost preview

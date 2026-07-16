@@ -10,7 +10,11 @@ from typing import Any
 import click
 import yaml
 
-from geusemaker.cli.output.verbosity import VerbosityLevel, get_verbosity
+from geusemaker.cli.output.verbosity import (
+    VerbosityLevel,
+    get_verbosity,
+    set_machine_output,
+)
 
 
 class OutputFormat(str, Enum):
@@ -21,6 +25,13 @@ class OutputFormat(str, Enum):
     YAML = "yaml"
 
 
+def _activate_machine_output(ctx: click.Context, param: click.Parameter, value: str) -> str:  # noqa: ARG001
+    """Reserve stdout for the structured document as soon as --output is parsed."""
+    if value and value.lower() != OutputFormat.TEXT.value:
+        set_machine_output(True)
+    return value
+
+
 def output_option(default: OutputFormat = OutputFormat.TEXT) -> click.Option:
     """Return a Click option for output selection."""
     return click.option(
@@ -28,7 +39,8 @@ def output_option(default: OutputFormat = OutputFormat.TEXT) -> click.Option:
         type=click.Choice([f.value for f in OutputFormat], case_sensitive=False),
         default=default.value,
         show_default=True,
-        help="Output format: text, json, yaml.",
+        callback=_activate_machine_output,
+        help="Output format: text, json, yaml. json/yaml emit one document on stdout; diagnostics go to stderr.",
     )
 
 
@@ -67,13 +79,17 @@ def render_output(payload: Any, output_format: OutputFormat) -> str:
 
 
 def emit_result(payload: Any, output_format: OutputFormat, verbosity: str = "result") -> None:
-    """Print payload using the requested format and honour verbosity."""
+    """Print payload using the requested format and honour verbosity.
+
+    json/yaml documents are written raw to stdout via click.echo — never through
+    Rich, which could soft-wrap long lines and corrupt the document.
+    """
     from geusemaker.cli import console
 
     if output_format == OutputFormat.TEXT:
         console.print(payload, verbosity=verbosity)
         return
-    console.print(render_output(payload, output_format), verbosity="result")
+    click.echo(render_output(payload, output_format))
 
 
 def _normalize(value: Any) -> Any:

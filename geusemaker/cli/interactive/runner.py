@@ -12,6 +12,7 @@ from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
 from geusemaker.cli.display.cost import render_budget_status
 from geusemaker.cli.display.validation import render_validation_report
+from geusemaker.cli.output import is_machine_output
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3Orchestrator
@@ -45,6 +46,11 @@ class DeploymentRunner:
     def _stream_userdata_logs(self, state: DeploymentState) -> None:
         """Stream UserData initialization logs in real time from the deployed instance."""
         if not state.instance_id:
+            return
+
+        # Machine output reserves stdout for one structured document; the Rich Live
+        # panel writes directly to the console, so skip streaming entirely.
+        if is_machine_output():
             return
 
         ssm_service = SSMService(self.client_factory, region=state.config.region)

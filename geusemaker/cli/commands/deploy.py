@@ -9,7 +9,7 @@ from typing import Any
 import click
 
 from geusemaker.cli import console
-from geusemaker.cli.branding import DEPLOY_BANNER, EMOJI
+from geusemaker.cli.branding import COMPACT_BANNER, DEPLOY_BANNER, EMOJI
 from geusemaker.cli.interactive import (
     DeploymentRunner,
     DeploymentValidationFailed,
@@ -254,16 +254,35 @@ def deploy(
     output: str,
 ) -> None:
     """Create a new deployment (config build + AWS client bootstrap)."""
-    # Show the wicked deploy banner
-    console.print(DEPLOY_BANNER)
-    console.print()
+    # Determine output format BEFORE any rendering: json/yaml reserve stdout for
+    # exactly one structured document (diagnostics are diverted to stderr).
+    output_format = OutputFormat(output.lower())
 
     factory = AWSClientFactory()
     state_manager = StateManager()
     loader = ConfigLoader()
-    output_format = OutputFormat(output.lower())
 
     interactive_requested = interactive if interactive is not None else (stack_name is None and config is None)
+
+    if interactive_requested and output_format != OutputFormat.TEXT:
+        _emit_error(
+            build_response(
+                status="error",
+                message="Interactive mode is incompatible with --output json|yaml. "
+                "Pass --no-interactive with CLI options or --config.",
+                error_code="usage",
+            ),
+            output_format,
+        )
+        raise SystemExit(2)
+
+    if output_format == OutputFormat.TEXT:
+        # Full artwork only for the interactive wizard; a compact line otherwise.
+        if interactive_requested:
+            console.print(DEPLOY_BANNER)
+            console.print()
+        else:
+            console.print(f"[bold cyan]{COMPACT_BANNER}[/bold cyan]\n", verbosity="info")
     cli_overrides = _collect_overrides(
         ctx,
         stack_name=stack_name,

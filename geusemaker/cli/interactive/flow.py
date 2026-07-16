@@ -383,8 +383,10 @@ class InteractiveFlow:
             tables.resource_recommendations_panel(recommendations)
         selected_vpc: VPCInfo | None = None
         if vpcs:
-            options = [f"{v.vpc_id} ({v.cidr_block})" for v in vpcs]
-            choice = self.prompts.choose_from_list("Choose a VPC", options, default_index=1 if len(options) > 1 else 0)
+            options = [f"{v.vpc_id} ({v.cidr_block}){' [default VPC]' if v.is_default else ''}" for v in vpcs]
+            # Recommend the account's default VPC when present, else the first VPC.
+            default_vpc_idx = next((i for i, v in enumerate(vpcs) if v.is_default), 0)
+            choice = self.prompts.choose_from_list("Choose a VPC", options, default_index=default_vpc_idx)
             if choice > 0:
                 selected_vpc = vpcs[choice - 1]
         else:
@@ -489,8 +491,8 @@ class InteractiveFlow:
             choice = self.prompts.choose_from_list(
                 "Choose SSH key pair",
                 options,
-                default_index=0,
                 allow_create_new=True,
+                default_create_new=True,
             )
             self.state["keypair_name"] = None if choice == 0 else options[choice - 1]
         else:
@@ -554,7 +556,7 @@ class InteractiveFlow:
             messages.warning("No security groups found; a new one will be created.")
             return None
         options = [f"{g.name} ({g.security_group_id})" for g in groups]
-        choice = self.prompts.choose_from_list("Select security group", options, default_index=0)
+        choice = self.prompts.choose_from_list("Select security group", options, default_create_new=True)
         return None if choice == 0 else groups[choice - 1]
 
     def _select_efs_filesystem(self, filesystems: list[EFSInfo]) -> EFSInfo | None:
@@ -567,7 +569,7 @@ class InteractiveFlow:
             messages.info("No available EFS filesystems found; a new one will be created.")
             return None
         options = [f"{fs.file_system_id} ({fs.name or 'unnamed'})" for fs in available_fs]
-        choice = self.prompts.choose_from_list("Select EFS filesystem", options, default_index=0)
+        choice = self.prompts.choose_from_list("Select EFS filesystem", options, default_create_new=True)
         return None if choice == 0 else available_fs[choice - 1]
 
     def _build_config(self) -> DeploymentConfig:
