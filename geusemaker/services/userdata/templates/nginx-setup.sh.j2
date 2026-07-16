@@ -55,8 +55,9 @@ else
     fi
 
     # Package installs are done: let background security updates resume
-    # (stopped at the top of base.sh to keep the dpkg lock free).
+    # (timers and services stopped at the top of base.sh to keep the dpkg lock free).
     if [ "$OS_FAMILY" = "debian" ]; then
+        systemctl start apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
         systemctl start unattended-upgrades 2>/dev/null || true
     fi
 

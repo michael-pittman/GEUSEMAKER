@@ -102,11 +102,28 @@ echo "Detected OS family: $OS_FAMILY"
 # Debian/Ubuntu: set noninteractive frontend and add dpkg/apt lock retry helper
 if [ "$OS_FAMILY" = "debian" ]; then
     export DEBIAN_FRONTEND=noninteractive
-    # unattended-upgrades can hold the dpkg lock for many minutes right after boot,
-    # starving later installs (observed: NGINX install failing after 5 minutes of
-    # lock retries). Stop it during bootstrap; the service stays enabled and is
-    # started again at the end of nginx-setup (and on any reboot).
-    systemctl stop unattended-upgrades 2>/dev/null || true
+    # Background apt activity (apt-daily / apt-daily-upgrade timers running
+    # unattended-upgrade) can hold the dpkg lock for many minutes right after
+    # boot, starving every install in this script (observed live: efs-utils and
+    # NGINX installs failing after 5 minutes of lock retries). Stopping only the
+    # unattended-upgrades *service* is not enough — the lock holder is the
+    # timer-triggered apt-daily run. Stop the timers and services, then wait for
+    # the lock files to actually be released before any apt call. Everything is
+    # restarted at the end of nginx-setup (and on any reboot).
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades 2>/dev/null || true
+
+    echo "Waiting for dpkg/apt locks to be released..."
+    lock_wait=0
+    while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+        if [ "$lock_wait" -ge 600 ]; then
+            echo "WARNING: dpkg/apt locks still held after ${lock_wait}s; proceeding (per-call retries will handle residual contention)"
+            break
+        fi
+        sleep 5
+        lock_wait=$((lock_wait + 5))
+    done
+    echo "dpkg/apt locks free after ${lock_wait}s"
 fi
 
 with_dpkg_lock_retry() {
