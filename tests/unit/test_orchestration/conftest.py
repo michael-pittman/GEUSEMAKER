@@ -23,8 +23,11 @@ class StubStateManager:
             return self.saved_state
         return None
 
-    async def archive_deployment(self, stack_name: str) -> None:  # noqa: ARG002
-        """Archive deployment (stub no-op)."""
+    async def archive_deployment(self, state) -> None:  # type: ignore[no-untyped-def]
+        """Archive deployment (stub mirrors the real signature: takes a DeploymentState)."""
+        # Matching the real API matters: a stub accepting a plain string masked a
+        # live rollback crash ('str' object has no attribute 'updated_at').
+        _ = state.updated_at
         return None
 
 

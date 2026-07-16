@@ -213,9 +213,7 @@ class Tier1Orchestrator:
         if result.errors:
             error_summary = "; ".join(result.errors)
             raise RuntimeError(f"Rollback encountered errors: {error_summary}")
-
-        # Archive the failed deployment state after successful cleanup
-        asyncio.run(self.state_manager.archive_deployment(partial_state.stack_name))
+        # destroy() already archived the state and removed the deployment file.
 
     def _save_failed_state(self, partial_state: DeploymentState, error: Exception) -> None:
         """
