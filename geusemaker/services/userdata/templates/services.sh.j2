@@ -57,7 +57,8 @@ else
             echo "OLLAMA_PORT={{ ollama_port }}"
             echo "QDRANT_PORT={{ qdrant_port }}"
             echo "CRAWL4AI_PORT={{ crawl4ai_port }}"
-            echo "POSTGRES_PASSWORD={{ postgres_password }}"
+            {# Single quotes: the password must never go through shell expansion #}
+            echo 'POSTGRES_PASSWORD={{ postgres_password }}'
             echo "N8N_ENCRYPTION_KEY=${n8n_encryption_key}"
             echo "CRAWL4AI_API_TOKEN=${crawl4ai_api_token}"
             echo "N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}"

@@ -61,8 +61,14 @@ class Tier1Orchestrator:
         self.userdata_generator = UserDataGenerator()
 
     def _generate_postgres_password(self, length: int = 32) -> str:
-        """Generate a secure random password for PostgreSQL."""
-        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        """Generate a secure random password for PostgreSQL.
+
+        The password is embedded in shell scripts (UserData) and JSON templates,
+        so the alphabet must avoid characters that expand or escape there:
+        $ ` \\ " ' — a password containing e.g. "$K" aborts UserData with
+        "unbound variable" under set -u.
+        """
+        alphabet = string.ascii_letters + string.digits + "!@#%^*-_+=."
         return "".join(secrets.choice(alphabet) for _ in range(length))
 
     def _log_selection(self, selection: InstanceSelection) -> None:
