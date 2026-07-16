@@ -10,9 +10,11 @@ from rich.text import Text
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.components.stage import print_stage
 from geusemaker.cli.display.cost import render_budget_status
 from geusemaker.cli.display.validation import render_validation_report
 from geusemaker.cli.output import is_machine_output
+from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3Orchestrator
@@ -130,8 +132,10 @@ class DeploymentRunner:
         config: DeploymentConfig,
         progress: object | None = None,
         skip_validation: bool = False,
+        on_progress: ProgressCallback | None = None,
     ) -> DeploymentState:
         """Validate configuration and run the Tier1 orchestrator."""
+        emit = on_progress or print_stage
         # Normalize tier-related feature flags
         updates: dict[str, object] = {}
         if config.tier == "automation" and not config.enable_alb:
@@ -141,6 +145,12 @@ class DeploymentRunner:
                 updates["enable_alb"] = True
             if not config.enable_cdn:
                 updates["enable_cdn"] = True
+        # The 15-minute default rollback timeout cannot fit a CDN deployment:
+        # ACM issuance + instance + ALB alone take ~15 minutes before CloudFront's
+        # 15-30 minute rollout begins, so the default would abort every healthy
+        # Tier 3 deploy. Scale it up unless the user chose a larger value.
+        if (config.enable_cdn or config.tier == "gpu") and config.rollback_timeout_minutes <= 15:
+            updates["rollback_timeout_minutes"] = 60
         if updates:
             config = config.model_copy(update=updates)
             console.print(
@@ -163,6 +173,7 @@ class DeploymentRunner:
         )
         budget_service = BudgetService()
 
+        emit(ProgressEvent("spot", f"Selecting compute capacity for {config.instance_type}"))
         selection = spot_selector.select_instance_type(config)
         estimate = cost_estimator.estimate_deployment_cost(config, selection=selection)
         budget_status = budget_service.check_budget(estimate, config.budget_limit)
@@ -176,6 +187,7 @@ class DeploymentRunner:
                 verbosity="info",
             )
         else:
+            emit(ProgressEvent("validate", "Running pre-deployment validation"))
             validator = PreDeploymentValidator(self.client_factory, region=config.region)
             if progress:
                 try:
@@ -268,6 +280,8 @@ class DeploymentRunner:
         )
         # Share pre-selected compute choice to align AZ + pricing with validation
         orchestrator._preselected_selection = selection
+        primary_stage = "cdn" if config.enable_cdn or config.tier == "gpu" else "alb" if config.enable_alb else "ec2"
+        emit(ProgressEvent(primary_stage, f"Provisioning {config.topology} topology"))
         state = orchestrator.deploy(config, enable_rollback=config.auto_rollback_on_failure)
 
         # Stream UserData initialization logs after deployment
@@ -276,6 +290,7 @@ class DeploymentRunner:
                 progress.advance("Streaming initialization logs")
             except AttributeError:
                 pass
+        emit(ProgressEvent("userdata", "Streaming instance initialization"))
         self._stream_userdata_logs(state)
 
         if progress:
@@ -283,6 +298,7 @@ class DeploymentRunner:
                 progress.advance("Saving state")
             except AttributeError:
                 pass
+        emit(ProgressEvent("finalize", f"Deployment state saved for {state.stack_name}"))
         return state
 
     def _select_orchestrator(
