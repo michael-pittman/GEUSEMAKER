@@ -40,12 +40,16 @@ class CloudFrontService(BaseService):
         compress: bool = True,
         price_class: str = "PriceClass_100",
         security_headers_policy_id: str | None = None,
+        origin_protocol_policy: str = "https-only",
     ) -> dict[str, Any]:
         """
         Create CloudFront distribution with ALB as custom origin.
 
         Args:
-            alb_dns_name: ALB DNS name (e.g., my-alb-123456.us-east-1.elb.amazonaws.com)
+            alb_dns_name: Origin domain name. Must be the custom domain covered by the
+                ALB certificate when origin_protocol_policy is "https-only" -- CloudFront
+                validates the origin certificate against this name, and ALB certificates
+                never cover the raw *.elb.amazonaws.com DNS name.
             caller_reference: Unique reference for this distribution
             enabled: Whether distribution should be enabled after creation
             comment: Optional description for the distribution
@@ -58,6 +62,8 @@ class CloudFrontService(BaseService):
             compress: Enable automatic compression for objects
             price_class: Price class (PriceClass_100, PriceClass_200, PriceClass_All)
             security_headers_policy_id: Optional managed policy ID for security headers
+            origin_protocol_policy: Protocol CloudFront uses to reach the origin
+                ("https-only", "http-only", or "match-viewer")
 
         Returns:
             CloudFront CreateDistribution API response with Distribution and ETag
@@ -73,7 +79,7 @@ class CloudFrontService(BaseService):
             "CustomOriginConfig": {
                 "HTTPPort": 80,
                 "HTTPSPort": 443,
-                "OriginProtocolPolicy": "https-only",  # Enforce HTTPS between CloudFront and ALB
+                "OriginProtocolPolicy": origin_protocol_policy,
                 "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]},
                 "OriginReadTimeout": 30,
                 "OriginKeepaliveTimeout": 5,

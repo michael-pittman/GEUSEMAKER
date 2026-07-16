@@ -182,10 +182,19 @@ class CloudFrontInfo(BaseModel):
     ssl_certificate: str | None = None
 
 
+class HostedZoneInfo(BaseModel):
+    """Route 53 hosted zone metadata (public zones only for ACM DNS validation)."""
+
+    hosted_zone_id: str
+    name: str
+    private_zone: bool = False
+
+
 __all__ = [
     "ALBInfo",
     "CloudFrontInfo",
     "EFSInfo",
+    "HostedZoneInfo",
     "KeyPairInfo",
     "ListenerInfo",
     "MountTargetInfo",

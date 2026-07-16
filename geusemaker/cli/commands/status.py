@@ -22,6 +22,7 @@ from geusemaker.cli.output import (
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.services.ec2 import EC2Service
 from geusemaker.services.health import HealthCheckClient
+from geusemaker.services.health.services import NGINX_ROUTES
 
 
 @click.command("status")
@@ -87,21 +88,22 @@ def status(stack_name: str, state_dir: str | None, output: str) -> None:
         host = public_ip or private_ip
         health_client = HealthCheckClient()
 
-        # Check each service
+        # Service ports bind to 127.0.0.1 on the instance; probe through the
+        # host NGINX reverse proxy (port 80) via its path routes instead.
         services = [
-            ("n8n", 5678, "/healthz"),
-            ("Qdrant", 6333, "/health"),
-            ("Ollama", 11434, "/api/tags"),
-            ("Crawl4AI", 11235, "/health"),
-            ("PostgreSQL", 5432, None),  # TCP check only
+            ("n8n", NGINX_ROUTES["n8n"]),
+            ("Qdrant", NGINX_ROUTES["qdrant"]),
+            ("Ollama", NGINX_ROUTES["ollama"]),
+            ("Crawl4AI", NGINX_ROUTES["crawl4ai"]),
+            ("PostgreSQL", None),  # TCP check only
         ]
 
-        for service_name, port, path in services:
+        for service_name, path in services:
             try:
                 if path:
-                    result = asyncio.run(health_client.check_http(f"http://{host}:{port}{path}", timeout_seconds=3))
+                    result = asyncio.run(health_client.check_http(f"http://{host}{path}", timeout_seconds=3))
                 else:
-                    result = asyncio.run(health_client.check_tcp(host, port, timeout_seconds=3))
+                    result = asyncio.run(health_client.check_tcp(host, 5432, timeout_seconds=3))
                 health_status[service_name] = "healthy" if result.healthy else "unhealthy"
             except Exception:  # noqa: BLE001
                 health_status[service_name] = "unreachable"
@@ -166,18 +168,18 @@ def _display_status_text(
     # Service health table
     health_table = Table(show_header=True, box=None)
     health_table.add_column("Service", style="cyan")
-    health_table.add_column("Port")
+    health_table.add_column("Route")
     health_table.add_column("Status")
 
-    service_ports = {
-        "n8n": 5678,
-        "Qdrant": 6333,
-        "Ollama": 11434,
-        "Crawl4AI": 11235,
-        "PostgreSQL": 5432,
+    service_routes = {
+        "n8n": NGINX_ROUTES["n8n"],
+        "Qdrant": NGINX_ROUTES["qdrant"],
+        "Ollama": NGINX_ROUTES["ollama"],
+        "Crawl4AI": NGINX_ROUTES["crawl4ai"],
+        "PostgreSQL": ":5432 (TCP)",
     }
 
-    for service_name, port in service_ports.items():
+    for service_name, route in service_routes.items():
         status_text = health_status.get(service_name, "unknown")
         status_colors = {
             "healthy": "green",
@@ -196,7 +198,7 @@ def _display_status_text(
 
         health_table.add_row(
             service_name,
-            str(port),
+            route,
             f"[{status_color}]{icon} {status_text}[/{status_color}]",
         )
 

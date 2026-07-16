@@ -36,9 +36,18 @@ class StubPricingService:
 
 
 class FakeEC2:
-    def __init__(self, code: str = "DryRunOperation", placement_scores: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        code: str = "DryRunOperation",
+        placement_scores: dict[str, float] | None = None,
+        placement_scores_by_zone_id: dict[str, float] | None = None,
+        zone_id_to_name: dict[str, str] | None = None,
+    ) -> None:
         self.code = code
         self.placement_scores = placement_scores or {}
+        self.placement_scores_by_zone_id = placement_scores_by_zone_id or {}
+        self.zone_id_to_name = zone_id_to_name or {}
+        self.last_placement_scores_kwargs: dict[str, object] = {}
 
     def describe_spot_price_history(self, **_: object) -> dict:
         return {"SpotPriceHistory": []}
@@ -53,13 +62,26 @@ class FakeEC2:
         InstanceTypes: list[str],  # noqa: ARG002, N803
         TargetCapacity: int,  # noqa: ARG002, N803
         SingleAvailabilityZone: bool,  # noqa: ARG002, N803
+        RegionNames: list[str] | None = None,  # noqa: N803
     ) -> dict:
         """Mock spot placement scores API."""
-        scores = [
+        self.last_placement_scores_kwargs = {"RegionNames": RegionNames}
+        scores: list[dict[str, object]] = [
             {"AvailabilityZone": az, "Score": score}
             for az, score in self.placement_scores.items()
         ]
+        scores += [
+            {"AvailabilityZoneId": zone_id, "Score": score}
+            for zone_id, score in self.placement_scores_by_zone_id.items()
+        ]
         return {"SpotPlacementScores": scores}
+
+    def describe_availability_zones(self, **_: object) -> dict:
+        return {
+            "AvailabilityZones": [
+                {"ZoneId": zone_id, "ZoneName": name} for zone_id, name in self.zone_id_to_name.items()
+            ],
+        }
 
 
 class FakeFactory:
@@ -115,6 +137,36 @@ def test_fallback_when_capacity_unavailable() -> None:
     assert selection.is_spot is False
     assert selection.fallback_reason is not None
     assert "Spot capacity unavailable" in selection.fallback_reason
+
+
+def test_inconclusive_capacity_error_still_selects_spot() -> None:
+    """Non-capacity dry-run errors (permissions, missing default VPC) must not force on-demand."""
+    pricing = StubPricingService(spot_price=Decimal("0.012"), on_demand=Decimal("0.0416"))
+    ec2 = FakeEC2(code="UnauthorizedOperation")
+    factory = FakeFactory(ec2_client=ec2)
+    service = SpotSelectionService(factory, pricing_service=pricing, region="us-east-1", ec2_client=ec2)
+
+    selection = service.select_instance_type(_config())
+    assert selection.is_spot is True
+    assert selection.availability_zone == "us-east-1a"
+
+
+def test_placement_scores_map_zone_ids_to_names() -> None:
+    """The placement-scores API returns zone ids; they must map to AZ names to match spot prices."""
+    pricing = StubPricingService(spot_price=Decimal("0.012"), on_demand=Decimal("0.0416"))
+    ec2 = FakeEC2(
+        code="DryRunOperation",
+        placement_scores_by_zone_id={"use1-az1": 8.0, "use1-az2": 4.5},
+        zone_id_to_name={"use1-az1": "us-east-1a", "use1-az2": "us-east-1b"},
+    )
+    factory = FakeFactory(ec2_client=ec2)
+    service = SpotSelectionService(factory, pricing_service=pricing, region="us-east-1", ec2_client=ec2)
+
+    scores = service.get_spot_placement_scores("t3.medium", "us-east-1")
+
+    assert scores == {"us-east-1a": 8.0, "us-east-1b": 4.5}
+    # Scores must be scoped to the deployment region.
+    assert ec2.last_placement_scores_kwargs["RegionNames"] == ["us-east-1"]
 
 
 def test_get_spot_placement_scores_returns_scores_by_az() -> None:

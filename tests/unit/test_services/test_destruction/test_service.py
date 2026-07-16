@@ -89,6 +89,38 @@ class StubEFS:
         return {"MountTargets": targets}
 
 
+class StubELBV2Paginator:
+    def paginate(self):  # type: ignore[no-untyped-def]
+        return [{"LoadBalancers": []}]
+
+
+class StubELBV2:
+    """Stub ELBv2 client so destruction tests never hit real AWS."""
+
+    def get_paginator(self, name: str):  # noqa: ARG002
+        return StubELBV2Paginator()
+
+
+class StubELBV2Order(StubELBV2):
+    """Record call order and simulate ResourceInUse if TG is deleted before ALB."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+        self._deleted_alb = False
+
+    def deregister_targets(self, TargetGroupArn, Targets):  # type: ignore[no-untyped-def]  # noqa: N803
+        self.calls.append(("deregister_targets", TargetGroupArn, Targets))
+
+    def delete_load_balancer(self, LoadBalancerArn):  # type: ignore[no-untyped-def]  # noqa: N803
+        self.calls.append(("delete_load_balancer", LoadBalancerArn))
+        self._deleted_alb = True
+
+    def delete_target_group(self, TargetGroupArn):  # type: ignore[no-untyped-def]  # noqa: N803
+        self.calls.append(("delete_target_group", TargetGroupArn))
+        if not self._deleted_alb:
+            raise RuntimeError("ResourceInUse: target group still referenced by listener")
+
+
 def _state() -> DeploymentState:
     config = DeploymentConfig(stack_name="demo", tier="dev")
     cost = CostTracking(
@@ -123,7 +155,7 @@ def test_destruction_deletes_created_resources_and_archives(tmp_path: Path) -> N
     manager = StateManager(base_path=tmp_path)
     ec2 = StubEC2()
     efs = StubEFS(mount_targets=["mt-1", "mt-2"])
-    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs, elbv2_client=StubELBV2())
 
     result = service.destroy(state)
 
@@ -140,6 +172,27 @@ def test_destruction_deletes_created_resources_and_archives(tmp_path: Path) -> N
     assert (tmp_path / "archive").exists()
 
 
+def test_destruction_deletes_alb_before_target_group(tmp_path: Path) -> None:
+    """Ensure ALB deletion happens before target group deletion to avoid ResourceInUse."""
+    state = _state()
+    state.alb_arn = "arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/demo/abc"
+    state.target_group_arn = "arn:aws:elasticloadbalancing:us-east-1:123:targetgroup/demo/def"
+
+    manager = StateManager(base_path=tmp_path)
+    ec2 = StubEC2()
+    efs = StubEFS()
+    elbv2 = StubELBV2Order()
+
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs, elbv2_client=elbv2)
+    result = service.destroy(state)
+
+    assert result.success is True
+    # Extract indices from recorded calls.
+    lb_idx = next(i for i, call in enumerate(elbv2.calls) if call[0] == "delete_load_balancer")
+    tg_idx = next(i for i, call in enumerate(elbv2.calls) if call[0] == "delete_target_group")
+    assert lb_idx < tg_idx
+
+
 def test_destruction_preserves_reused_vpc(tmp_path: Path) -> None:
     state = _state()
     state.config = state.config.model_copy(update={"vpc_id": state.vpc_id})
@@ -154,7 +207,7 @@ def test_destruction_preserves_reused_vpc(tmp_path: Path) -> None:
     manager = StateManager(base_path=tmp_path)
     ec2 = StubEC2()
     efs = StubEFS()
-    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs, elbv2_client=StubELBV2())
 
     result = service.destroy(state)
 
@@ -168,7 +221,7 @@ def test_destruction_preserves_efs_when_flag_set(tmp_path: Path) -> None:
     manager = StateManager(base_path=tmp_path)
     ec2 = StubEC2()
     efs = StubEFS(mount_targets=["mt-1", "mt-2"])
-    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs, elbv2_client=StubELBV2())
 
     result = service.destroy(state, preserve_efs=True)
 
@@ -194,7 +247,7 @@ def test_destruction_deletes_efs_when_flag_not_set(tmp_path: Path) -> None:
     manager = StateManager(base_path=tmp_path)
     ec2 = StubEC2()
     efs = StubEFS(mount_targets=["mt-1"])
-    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs)
+    service = DestructionService(state_manager=manager, ec2_client=ec2, efs_client=efs, elbv2_client=StubELBV2())
 
     result = service.destroy(state, preserve_efs=False)
 

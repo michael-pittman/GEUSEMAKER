@@ -84,7 +84,7 @@ geusemaker deploy \
   --no-interactive \
   --stack-name my-ai-stack \
   --region us-east-1 \
-  --tier 1 \
+  --tier dev \
   --instance-type t3.large \
   --use-spot \
   --vpc-id vpc-123456 \
@@ -101,7 +101,7 @@ YAML/JSON configuration with CLI flag overrides:
 cat > deployment.yaml <<EOF
 stack_name: my-ai-stack
 region: us-east-1
-tier: 1
+tier: dev
 
 # Instance configuration
 instance_type: t3.large
@@ -215,11 +215,11 @@ docker logs -f n8n
 # Get instance ID
 INSTANCE_ID=$(geusemaker status my-ai-stack --output json | jq -r '.data.instance.instance_id')
 
-# Stream UserData logs via SSM
+# Fetch latest UserData logs via SSM
 aws ssm send-command \
   --instance-ids $INSTANCE_ID \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["tail -f /var/log/geusemaker-userdata.log"]' \
+  --parameters 'commands=["tail -n 200 /var/log/geusemaker-userdata.log"]' \
   --region us-east-1
 
 # For continuous streaming, use Session Manager (Option 2) or GeuseMaker CLI (Option 1)
@@ -253,8 +253,9 @@ docker logs -f postgres
 tail -f /var/log/geusemaker-userdata.log \
          /var/log/geusemaker/model-preload.log
 
-# Stream multiple containers simultaneously
-docker logs -f n8n ollama qdrant
+# Stream multiple containers simultaneously (prefix each line with service name)
+for svc in n8n ollama qdrant; do docker logs -f "$svc" 2>&1 | sed "s/^/[$svc] /" & done
+wait
 ```
 
 **Option 5: Real-time Multi-Log Monitoring**
@@ -291,113 +292,114 @@ Once deployment completes and health checks pass:
 # Get public IP
 geusemaker status my-ai-stack
 
-# Access web interfaces
-# n8n:      http://<public-ip>:5678
-# Qdrant:   http://<public-ip>:6333/dashboard
-# Ollama:   http://<public-ip>:11434/api/tags
-# Crawl4AI: http://<public-ip>:11235/docs
+# Access web interfaces through the shared reverse-proxy routes (all tiers)
+# n8n:      https://<host>/
+# Qdrant UI:https://<host>/qdrant-ui/
+# Ollama:   https://<host>/api/ollama/api/tags
+# Crawl4AI: https://<host>/crawl4ai/docs
 
 # Test Ollama API
-curl http://<public-ip>:11434/api/chat -d '{
+curl https://<host>/api/ollama/api/chat -d '{
   "model": "qwen2.5:1.5b-instruct",
   "messages": [{"role": "user", "content": "Hello!"}]
 }'
 
 # List preloaded models
-curl http://<public-ip>:11434/api/tags
+curl https://<host>/api/ollama/api/tags
 ```
+
+All tiers use the same path routing:
+
+| Path | Backend |
+|------|---------|
+| `/` | n8n (`:5678`) |
+| `/api/ollama/*` | Ollama (`:11434`), prefix stripped |
+| `/qdrant/*` | Qdrant API (`:6333`), prefix stripped |
+| `/qdrant-ui/` | Qdrant dashboard (`:6333/dashboard/`) |
+| `/crawl4ai/*` | Crawl4AI (`:11235`), prefix stripped |
+| `/healthz` | NGINX returns `200 OK` |
 
 ### Configure n8n Credentials
 
-GeuseMaker **automatically preloads** n8n with PostgreSQL credentials during deployment, so workflows can run immediately without manual setup.
+GeuseMaker **automatically preloads** n8n with credentials during deployment using the n8n CLI, so workflows can run immediately without manual setup.
 
 #### Automatic Credential Preloading
 
 During deployment, GeuseMaker automatically:
-- ✅ Creates PostgreSQL credential (`postgres-local`) with connection details
-- ✅ Waits for n8n API to be ready before creating credentials
-- ✅ Handles authentication via owner API key or basic auth (if configured)
+- ✅ Creates **PostgreSQL Local** credential with connection details
+- ✅ Creates **Ollama Local** credential for AI workflows
+- ✅ Uses `n8n import:credentials` CLI (works before owner account setup, no auth config needed)
 
-**To enable automatic credential creation**, set one of these environment variables in your deployment config:
+**No configuration required** - credentials are imported directly into n8n's database during instance initialization.
 
-```yaml
-# Option 1: Owner API key (recommended)
-custom_env:
-  N8N_USER_MANAGEMENT_OWNER_API_KEY: "your-api-key-here"
+#### Preloaded Credentials
 
-# Option 2: Basic auth
-custom_env:
-  N8N_BASIC_AUTH_ACTIVE: "true"
-  N8N_BASIC_AUTH_USER: "admin"
-  N8N_BASIC_AUTH_PASSWORD: "your-password"
-```
+#### 1. **PostgreSQL Database** (Auto-configured)
 
-**If API authentication isn't configured**, credentials will be created manually after first n8n login. The deployment script will log instructions for manual setup.
-
-#### Manual Credential Configuration
-
-If automatic preloading didn't work or you need to add additional credentials:
-
-#### 1. **Ollama Connection** (Required for AI workflows)
-
-In n8n, create a new **Ollama** credential:
-
-- **Base URL**: `http://ollama:11434`
-  - ⚠️ **Important**: Use `ollama` (container name), NOT `localhost`
-  - n8n runs in Docker and must use Docker network hostnames
-- **API Key**: (leave empty - no authentication required)
-
-**Why `ollama:11434`?**
-- Both n8n and Ollama run in Docker containers on the same network
-- Docker Compose automatically creates DNS resolution between containers
-- `localhost` inside the n8n container refers to itself, not other containers
-
-#### 2. **PostgreSQL Database** (Auto-configured & Preloaded)
-
-n8n is automatically configured to use PostgreSQL, and the credential is **preloaded** during deployment:
-
-- **Credential Name**: `PostgreSQL Local` (ID: `postgres-local`)
+- **Credential Name**: `PostgreSQL Local`
 - **Host**: `postgres` (container name)
 - **Port**: `5432`
 - **Database**: `geusemaker`
 - **User**: `geusemaker`
-- **Password**: Set during deployment (from `postgres_password` config)
+- **Password**: Auto-generated during deployment
 
-**✅ Credential is automatically created** - workflows referencing `postgres-local` will work immediately.
+**To verify:** Log into n8n UI → **Credentials** → Look for "PostgreSQL Local"
 
-**To verify credential was created:**
-1. Log into n8n UI: `http://<public-ip>:5678`
-2. Go to **Credentials** → Look for "PostgreSQL Local"
-3. If missing, see "Manual Credential Setup" below
+#### 2. **Ollama Connection** (Auto-configured)
 
-**To retrieve the PostgreSQL password** (if needed for direct database access):
+- **Credential Name**: `Ollama Local`
+- **Base URL**: `http://ollama:11434`
+  - ⚠️ Uses `ollama` (container name), NOT `localhost` - n8n uses Docker network hostnames
+
+#### Retrieving the PostgreSQL Password
+
+The PostgreSQL password is auto-generated during deployment and stored on the instance. To retrieve it:
+
+**Server-side** (after SSH to instance):
 ```bash
-# Get the public IP of your instance
-PUBLIC_IP=$(geusemaker status <stack-name> --output json | jq -r '.data.instance.public_ip')
+# From the runtime environment file (recommended)
+grep POSTGRES_PASSWORD /mnt/efs/runtime.env
 
-# SSH to the instance
-ssh -i ~/.ssh/key.pem ubuntu@$PUBLIC_IP  # or ec2-user@ for Amazon Linux
-
-# Get password from Docker container environment
-docker exec n8n env | grep POSTGRES_PASSWORD
-
-# Or from PostgreSQL container directly
-docker exec postgres env | grep POSTGRES_PASSWORD
-
-# Or print just the password value
+# Or from the PostgreSQL container directly
 docker exec postgres printenv POSTGRES_PASSWORD
+```
+
+**From your local machine** (via SSH):
+```bash
+PUBLIC_IP=$(geusemaker status <stack-name> --output json | jq -r '.data.instance.public_ip')
+ssh -i ~/.ssh/key.pem ubuntu@$PUBLIC_IP "grep POSTGRES_PASSWORD /mnt/efs/runtime.env"
+# Use ec2-user@ for Amazon Linux instead of ubuntu@
+```
+
+**Via SSM** (no SSH key needed, requires IAM permissions):
+```bash
+INSTANCE_ID=$(geusemaker status <stack-name> --output json | jq -r '.data.instance.instance_id')
+
+# Run command via SSM
+CMD_ID=$(aws ssm send-command \
+  --instance-ids "$INSTANCE_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["grep POSTGRES_PASSWORD /mnt/efs/runtime.env"]' \
+  --query "Command.CommandId" --output text)
+
+# Get the output (wait a few seconds for execution)
+sleep 3
+aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "$INSTANCE_ID" \
+  --query "StandardOutputContent" --output text
 ```
 
 #### 3. **Qdrant Connection** (Optional, for vector workflows)
 
-If you need to connect n8n to Qdrant:
+If you need to connect n8n to Qdrant, create manually:
 
 - **Base URL**: `http://qdrant:6333`
 - **API Key**: (leave empty - no authentication required)
 
 #### 4. **Crawl4AI Connection** (Optional, for web scraping workflows)
 
-If you need to connect n8n to Crawl4AI:
+If you need to connect n8n to Crawl4AI, create manually:
 
 - **Base URL**: `http://crawl4ai:11235`
 - **API Key**: (leave empty - no authentication required)
@@ -409,6 +411,14 @@ n8n automatically generates an encryption key (`N8N_ENCRYPTION_KEY`) during depl
 - Stored in `/mnt/efs/runtime.env` on the EC2 instance
 - Used to encrypt all credentials stored in n8n workflows
 - **Critical**: If you lose this key, you cannot decrypt existing credentials
+
+**To view the encryption key** (if needed for backup):
+```bash
+ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
+grep N8N_ENCRYPTION_KEY /mnt/efs/runtime.env
+```
+
+**⚠️ Security Note**: Keep the encryption key secure. If you need to migrate n8n data, you must preserve this key.
 
 #### Troubleshooting Credential Preloading
 
@@ -424,22 +434,15 @@ tail -100 /var/log/geusemaker-userdata.log | grep -i credential
 ```
 
 **Common issues:**
-- **n8n API not ready**: Wait a few minutes after deployment, then manually create credentials
-- **Authentication not configured**: Set `N8N_USER_MANAGEMENT_OWNER_API_KEY` or basic auth env vars
-- **Credential already exists**: Safe to ignore - existing credential will be used
+- **n8n container not ready**: The import waits for the container to start; check container logs with `docker logs n8n`
+- **Credential already exists**: n8n CLI skips duplicates - safe to ignore
+- **Import failed**: Check `/var/log/geusemaker-userdata.log` for the CLI output
 
 **Manual credential creation** (if automatic preloading failed):
 1. Log into n8n: `http://<public-ip>:5678`
-2. Go to **Credentials** → **Add Credential** → **PostgreSQL**
-3. Use connection details from "PostgreSQL Database" section above
-
-**To view the encryption key** (if needed for backup):
-```bash
-ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
-cat /mnt/efs/runtime.env | grep N8N_ENCRYPTION_KEY
-```
-
-**⚠️ Security Note**: Keep the encryption key secure. If you need to migrate n8n data, you must preserve this key.
+2. Go to **Credentials** → **Add Credential**
+3. Add **PostgreSQL** with connection details above (password from `/mnt/efs/runtime.env`)
+4. Add **Ollama** with base URL `http://ollama:11434`
 
 ### Cost Tracking
 

@@ -59,9 +59,9 @@ class InteractivePrompts:
 
     def tier(self, default: str | None = None) -> str:
         tiers = [
-            "dev – single instance (only tier currently implemented)",
-            "automation – ALB + HA (planned, deploys as dev for now)",
-            "gpu – ALB + CDN (planned, deploys as dev for now)",
+            "dev – single instance (NGINX self-signed HTTPS optional)",
+            "automation – ALB (Tier 2)",
+            "gpu – ALB + CloudFront (Tier 3)",
         ]
         tier_keys = ["dev", "automation", "gpu"]
         default_idx = tier_keys.index(default) if default in tier_keys else 0
@@ -69,7 +69,7 @@ class InteractivePrompts:
             "Select deployment tier",
             options=tiers,
             default_index=default_idx,
-            help_text="Only 'dev' tier is implemented. Other tiers accepted for future compatibility but deploy as dev.",
+            help_text="Tier 2/3 support HTTPS via ACM certificates (requires a real domain).",
         )
         return tier_keys[choice]
 

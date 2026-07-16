@@ -1,0 +1,103 @@
+# NGINX Reverse Proxy for GeuseMaker Tier 2/3
+# Generated for stack: {{ stack_name }}
+# HTTP-only — TLS is terminated at the ALB; NGINX handles path-based routing
+# and URL rewriting to backend services on localhost.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+
+    # Security headers (HSTS is set at the ALB/CloudFront layer)
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Increase client body size for n8n workflows
+    client_max_body_size 50M;
+
+    # n8n (primary application) — root path
+    location / {
+        proxy_pass http://localhost:5678;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support for n8n editor
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Timeouts for long-running workflows
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    # Ollama API
+    location /api/ollama/ {
+        rewrite ^/api/ollama/(.*) /$1 break;
+        proxy_pass http://localhost:11434;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Ollama-specific timeouts (model loading can be slow)
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 600s;
+        proxy_read_timeout 600s;
+    }
+
+    # Qdrant vector database API
+    location /qdrant/ {
+        rewrite ^/qdrant/(.*) /$1 break;
+        proxy_pass http://localhost:6333;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Qdrant Web UI — redirect bare path to trailing slash
+    location = /qdrant-ui {
+        return 301 $scheme://$host/qdrant-ui/;
+    }
+
+    # Qdrant Web UI — proxy to built-in dashboard
+    location /qdrant-ui/ {
+        rewrite ^/qdrant-ui/?(.*)$ /dashboard/$1 break;
+        proxy_pass http://localhost:6333;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    # Crawl4AI scraping service
+    location /crawl4ai/ {
+        rewrite ^/crawl4ai/(.*) /$1 break;
+        proxy_pass http://localhost:11235;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Crawl4AI timeouts (scraping can be slow)
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+
+    # Health check endpoint — ALB hits this on port 80
+    location /healthz {
+        access_log off;
+        return 200 "OK\n";
+        add_header Content-Type text/plain;
+    }
+}

@@ -104,6 +104,16 @@ class DeploymentConfig(BaseModel):
         default=None,
         description="ACM certificate ARN for CloudFront (Tier 3 only, must be in us-east-1 region).",
     )
+    # Optional: Auto-provision an ALB ACM certificate during deployment via Route 53 DNS validation.
+    # Used primarily by interactive mode to enable Tier 2 HTTPS in a single run.
+    alb_domain_name: str | None = Field(
+        default=None,
+        description="DNS name to request an ACM certificate for (e.g., n8n.example.com). Requires Route 53 validation.",
+    )
+    alb_hosted_zone_id: str | None = Field(
+        default=None,
+        description="Route 53 Hosted Zone ID used for DNS validation records (e.g., Z123...).",
+    )
     force_https_redirect: bool = Field(
         default=True,
         description="Redirect HTTP traffic to HTTPS (applies to ALB and CloudFront).",

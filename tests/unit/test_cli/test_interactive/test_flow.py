@@ -167,6 +167,8 @@ def test_interactive_flow_collects_config(monkeypatch, tmp_path):
         "demo",  # stack name
         "1",  # region
         "",  # tier default
+        "",  # enable_https default yes
+        "",  # tier1 self-signed default yes
         "",  # compute_type default (cpu)
         "",  # use spot default yes
         "",  # os_type default (ubuntu-22.04)
@@ -211,6 +213,8 @@ def test_interactive_flow_efs_with_new_vpc(monkeypatch, tmp_path):
         "demo-new-vpc",  # stack name
         "1",  # region
         "",  # tier default
+        "",  # enable_https default yes
+        "",  # tier1 self-signed default yes
         "",  # compute_type default (cpu)
         "",  # use spot default yes
         "",  # os_type default (ubuntu-22.04)

@@ -170,6 +170,34 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
 @click.option("--enable-alb/--disable-alb", default=False, help="Enable ALB (Tier 2/3).")
 @click.option("--enable-cdn/--disable-cdn", default=False, help="Enable CDN/CloudFront (Tier 3).")
 @click.option(
+    "--enable-https/--disable-https",
+    default=True,
+    show_default=True,
+    help="Enable HTTPS. Tier 1 uses self-signed via NGINX; Tier 2/3 require ACM certificate ARNs.",
+)
+@click.option(
+    "--tier1-self-signed/--no-tier1-self-signed",
+    default=True,
+    show_default=True,
+    help="Tier 1 only: use self-signed certs (via NGINX) when HTTPS is enabled.",
+)
+@click.option(
+    "--alb-certificate-arn",
+    default=None,
+    help="ACM certificate ARN for ALB HTTPS listener (Tier 2/3, must be in the deployment region).",
+)
+@click.option(
+    "--cloudfront-certificate-arn",
+    default=None,
+    help="ACM certificate ARN for CloudFront (Tier 3, must be in us-east-1).",
+)
+@click.option(
+    "--force-https-redirect/--no-force-https-redirect",
+    default=True,
+    show_default=True,
+    help="Redirect HTTP traffic to HTTPS (ALB and CloudFront).",
+)
+@click.option(
     "--auto-rollback/--no-auto-rollback",
     default=True,
     show_default=True,
@@ -215,6 +243,11 @@ def deploy(
     keypair_name: str | None,
     enable_alb: bool,
     enable_cdn: bool,
+    enable_https: bool,
+    tier1_self_signed: bool,
+    alb_certificate_arn: str | None,
+    cloudfront_certificate_arn: str | None,
+    force_https_redirect: bool,
     auto_rollback: bool,
     rollback_timeout: int,
     skip_validation: bool,
@@ -255,6 +288,11 @@ def deploy(
         keypair_name=keypair_name,
         enable_alb=enable_alb,
         enable_cdn=enable_cdn,
+        enable_https=enable_https,
+        tier1_use_self_signed=tier1_self_signed,
+        alb_certificate_arn=alb_certificate_arn,
+        cloudfront_certificate_arn=cloudfront_certificate_arn,
+        force_https_redirect=force_https_redirect,
         auto_rollback_on_failure=auto_rollback,
         rollback_timeout_minutes=rollback_timeout,
     )
@@ -284,6 +322,11 @@ def deploy(
             "keypair_name": prefill.get("keypair_name", keypair_name),
             "enable_alb": prefill.get("enable_alb", enable_alb),
             "enable_cdn": prefill.get("enable_cdn", enable_cdn),
+            "enable_https": prefill.get("enable_https", enable_https),
+            "tier1_use_self_signed": prefill.get("tier1_use_self_signed", tier1_self_signed),
+            "alb_certificate_arn": prefill.get("alb_certificate_arn", alb_certificate_arn),
+            "cloudfront_certificate_arn": prefill.get("cloudfront_certificate_arn", cloudfront_certificate_arn),
+            "force_https_redirect": prefill.get("force_https_redirect", force_https_redirect),
             "auto_rollback_on_failure": prefill.get("auto_rollback_on_failure", auto_rollback),
             "rollback_timeout_minutes": prefill.get("rollback_timeout_minutes", rollback_timeout),
         }

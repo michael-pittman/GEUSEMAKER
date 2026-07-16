@@ -46,6 +46,14 @@ geusemaker cleanup | backup | restore | init | info
 **Verbosity**: `--silent`, `--verbose` (-v), or default (emojis)
 **Output**: Always use `console.print()` from `geusemaker.cli`, NEVER `print()`
 
+**CLI internal structure**:
+- `cli/commands/` - Individual Click command modules (deploy, destroy, status, logs, etc.)
+- `cli/components/` - Reusable UI components (dialogs, messages, progress, tables, theme)
+- `cli/display/` - Output formatters (cost, discovery, health, listing, monitor, pricing, validation)
+- `cli/interactive/` - Interactive wizard flows and prompts
+- `cli/output/` - Verbosity control (`VerbosityConsole`)
+- `cli/branding.py` - Banners (`MAIN_BANNER`, `DEPLOY_BANNER`) and `EMOJI` dict
+
 ## MCP Tools
 
 **aws-documentation**: Search AWS docs, read pages, get recommendations
@@ -59,21 +67,28 @@ geusemaker cleanup | backup | restore | init | info
 | AWS SDK | Boto3 1.35+ | AWS API integration |
 | CLI | Click 8.1+ / Rich 13.9+ / questionary 2.0+ | Interface |
 | Validation | Pydantic 2.9+ | Config/state models |
+| HTTP | httpx 0.27+ | Health checks, async HTTP |
+| Locking | filelock 3.14+ | State file locking |
 | Testing | pytest 8.3+ / moto 5.0.25 | Test framework/mocking |
 | Code Quality | Ruff 0.5+ / mypy 1.11+ | Linting/type checking |
+| Build | hatchling | Build backend |
 
 ## Project Structure
 
 ```
 geusemaker/
 ├── geusemaker/           # Main Python package
-│   ├── cli/              # Click CLI + Rich UI
-│   ├── orchestration/    # Deployment workflows (tier1, tier2, tier3)
-│   ├── services/         # AWS resource managers
-│   ├── models/           # Pydantic models
-│   ├── infra/            # Boto3 clients, state persistence
-│   └── utils/            # Async helpers, retry logic
-└── tests/                # Unit and integration tests
+│   ├── cli/              # Click CLI + Rich UI (commands/, components/, display/, interactive/, output/)
+│   ├── orchestration/    # Deployment workflows (tier1, tier2, tier3, errors)
+│   ├── services/         # AWS resource managers (30+ services across subdirectories)
+│   ├── models/           # Pydantic models (70+ models, barrel-exported)
+│   ├── infra/            # Boto3 clients, state persistence, migrations
+│   ├── config/           # ConfigLoader, schema, env var mapping
+│   ├── runtime_assets/   # Docker compose, EFS utils, bundled images
+│   └── utils/            # Placeholder (currently empty)
+├── config/               # Sample deployment configs (ai-stack.yml, defaults.yml)
+├── scripts/              # Build, lint, test scripts
+└── tests/                # Unit tests (mirrors package structure)
 ```
 
 ## Critical Coding Rules (MANDATORY)
@@ -86,7 +101,7 @@ geusemaker/
 6. **ALWAYS validate inputs** - CLI args, user prompts, file reads
 7. **ALWAYS include emojis** - Use `EMOJI` dict from branding.py
 8. **ALWAYS tag AWS resources** - `Stack: {stack_name}` on all
-9. **ALWAYS use async for AWS calls** - Wrap with `asyncio.to_thread()`
+9. **Use async for polling/monitoring** - Wrap blocking AWS calls with `asyncio.to_thread()` in monitoring, validation, and backup services
 10. **EFS is MANDATORY** - Every deployment needs EFS for persistence
 
 ## Naming Conventions
@@ -108,7 +123,10 @@ geusemaker/
 ## Orchestration Workflow
 
 **Tier 1** ([tier1.py](geusemaker/orchestration/tier1.py)): VPC → SG → EFS → IAM → EC2 (spot)
-**Tier 2** ([tier2.py](geusemaker/orchestration/tier2.py)): + ALB with HTTPS listeners
+**Tier 2** ([tier2.py](geusemaker/orchestration/tier2.py)): + ALB with HTTPS listeners, ACM certificates, Route53 DNS
+**Tier 3** ([tier3.py](geusemaker/orchestration/tier3.py)): Extends Tier 2 + CloudFront CDN (GPU instances)
+
+**Inheritance**: Tier3Orchestrator → Tier2Orchestrator → Tier1Orchestrator
 
 **Key patterns**:
 - Save partial state after EFS/IAM (before EC2) for rollback
@@ -120,8 +138,20 @@ geusemaker/
 
 **Location**: `~/.geusemaker/<stack_name>.json` (version 2)
 **Contains**: Config, resource IDs, cost tracking, rollback records
-**Usage**: Always use `StateManager` to load/save state
+**Usage**: Always use `StateManager` to load/save state (uses `filelock` for concurrent access)
+**Migrations**: `geusemaker/infra/migrations/` handles version upgrades (e.g., v1_to_v2)
 **Critical**: NEVER store secrets in state files (plain JSON)
+
+## Configuration System
+
+**Config loading**: `ConfigLoader` in `geusemaker/config/` handles YAML/JSON config files with CLI flag overrides
+**Schema**: `CONFIG_SCHEMA` defines valid config keys and types
+**Env vars**: `ENV_VAR_MAP` maps environment variables to config keys
+**Sample configs**: `config/` directory at project root (ai-stack.yml, defaults.yml, logging.yml)
+
+```python
+from geusemaker.config import ConfigLoader, ConfigurationError, ENV_VAR_MAP
+```
 
 ## Import Patterns
 
@@ -133,7 +163,15 @@ from geusemaker.models import DeploymentConfig, DeploymentState, VPCInfo
 from geusemaker.services import EC2Service, EFSService, IAMService
 ```
 
-**Core services**: EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, DestructionService, StateRecoveryService
+**Core services**: EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, ALBService, CloudFrontService, SSMService, ACMService, Route53Service, DestructionService, StateRecoveryService, RollbackService, BackupService
+
+**Discovery services**: VPCDiscoveryService, EFSDiscoveryService, ALBDiscoveryService, CloudFrontDiscoveryService, SecurityGroupDiscoveryService, KeyPairDiscoveryService, Route53DiscoveryService
+
+**Cost/Compute services**: CostEstimator, CostReportService, BudgetService, ResourceTagger, PricingService, SpotSelectionService
+
+**Update services**: UpdateOrchestrator, InstanceUpdater, ContainerUpdater
+
+**Health/Monitoring**: HealthCheckClient, check_all_services, HealthMonitor, OrphanDetector
 
 ## Implementation Patterns
 
@@ -246,6 +284,17 @@ proxy_pass http://n8n:5678;  # Container name doesn't resolve on host
 
 **n8n container connections**: Use `http://ollama:11434` (container name) inside n8n workflows
 
+**All tiers use the same path routing**:
+
+| Path | Backend |
+|------|---------|
+| `/` | n8n (`:5678`) |
+| `/api/ollama/*` | Ollama (`:11434`), prefix stripped |
+| `/qdrant/*` | Qdrant API (`:6333`), prefix stripped |
+| `/qdrant-ui/` | Qdrant dashboard (`:6333/dashboard/`) |
+| `/crawl4ai/*` | Crawl4AI (`:11235`), prefix stripped |
+| `/healthz` | NGINX returns `200 OK` |
+
 ### Docker Storage Architecture
 
 **Split architecture**:
@@ -259,7 +308,7 @@ proxy_pass http://n8n:5678;  # Container name doesn't resolve on host
 
 ### UserData Generation
 
-**Templates** ([userdata/templates/](geusemaker/services/userdata/templates/)): base.sh.j2, docker.sh.j2, efs.sh.j2, services.sh.j2, healthcheck.sh.j2
+**Templates** ([userdata/templates/](geusemaker/services/userdata/templates/)): base.sh.j2, docker.sh.j2, efs.sh.j2, services.sh.j2, healthcheck.sh.j2, gpu.sh.j2, n8n-credentials.sh.j2, nginx-setup.sh.j2, nginx-ssl.conf.j2, ollama-models.sh.j2
 
 **Generator**:
 ```python

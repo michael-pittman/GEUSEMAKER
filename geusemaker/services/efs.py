@@ -164,10 +164,18 @@ class EFSService(BaseService):
 
     def wait_for_mount_target_deleted(self, mount_target_id: str, max_attempts: int = 60, delay: int = 5) -> None:
         """Wait until an EFS mount target is fully deleted."""
+        from botocore.exceptions import ClientError
 
         def _call() -> None:
             for attempt in range(max_attempts):
-                resp = self._efs.describe_mount_targets(MountTargetId=mount_target_id)
+                try:
+                    resp = self._efs.describe_mount_targets(MountTargetId=mount_target_id)
+                except ClientError as exc:
+                    # MountTargetNotFound means it's already gone -- treat as success
+                    if exc.response.get("Error", {}).get("Code") == "MountTargetNotFound":
+                        return
+                    raise
+
                 targets = resp.get("MountTargets", [])
                 if not targets:
                     return

@@ -9,13 +9,13 @@ import string
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState, VPCInfo
-from geusemaker.models.compute import InstanceSelection
+from geusemaker.models.compute import InstanceSelection, SavingsComparison
 from geusemaker.models.userdata import UserDataConfig
 from geusemaker.orchestration.errors import OrchestrationError
 from geusemaker.services.compute.spot import SpotSelectionService
@@ -87,6 +87,27 @@ class Tier1Orchestrator:
         self._preselected_selection = selection
         self._log_selection(selection)
         return selection
+
+    @staticmethod
+    def _on_demand_fallback_selection(selection: InstanceSelection, reason: str) -> InstanceSelection:
+        """Rebuild a spot selection as on-demand after a launch-time capacity failure."""
+        on_demand = selection.savings_vs_on_demand.on_demand_hourly
+        return InstanceSelection(
+            instance_type=selection.instance_type,
+            availability_zone=selection.availability_zone,
+            is_spot=False,
+            price_per_hour=on_demand,
+            selection_reason="Falling back to on-demand",
+            fallback_reason=reason,
+            savings_vs_on_demand=SavingsComparison(
+                on_demand_hourly=on_demand,
+                selected_hourly=on_demand,
+                hourly_savings=Decimal("0"),
+                monthly_savings=Decimal("0"),
+                savings_percentage=0.0,
+            ),
+            pricing_source="live",
+        )
 
     def _check_timeout(self, start_time: float, timeout_minutes: int, step: str) -> None:
         """Abort if deployment exceeds rollback timeout."""
@@ -288,6 +309,16 @@ class Tier1Orchestrator:
         )
         self._check_timeout(start_time, config.rollback_timeout_minutes, "instance launch")
 
+        # If spot capacity vanished at launch and we fell back to on-demand,
+        # update the selection so cost tracking and state match reality.
+        if instance_info.get("spot_fallback_to_on_demand"):
+            selection = self._on_demand_fallback_selection(
+                selection,
+                "Spot capacity unavailable at launch; launched on-demand",
+            )
+            self._preselected_selection = selection
+            self._log_selection(selection)
+
         # Step 8: Build and save final state
         final_state = self._build_final_state(
             config,
@@ -366,6 +397,15 @@ class Tier1Orchestrator:
                         f"{EMOJI['info']} Placing compute in {selection.availability_zone} to match spot pricing.",
                         verbosity="info",
                     )
+                else:
+                    fallback_subnet = subnet_lookup.get(chosen_public_subnet_id)
+                    fallback_az = fallback_subnet.availability_zone if fallback_subnet else "unknown"
+                    console.print(
+                        f"{EMOJI['warning']} No public subnet in {selection.availability_zone} where spot "
+                        f"pricing/capacity was validated; launching in {fallback_az} instead. "
+                        "Actual spot price and capacity may differ.",
+                        verbosity="warning",
+                    )
 
         # Select storage subnet for EFS mount target
         # CRITICAL: EFS mount targets must be in same subnet/AZ as EC2 instance for DNS resolution
@@ -415,10 +455,11 @@ class Tier1Orchestrator:
             return config.security_group_id, "reused"
 
         vpc: VPCInfo = vpc_info["vpc"]
+        # Service containers bind to 127.0.0.1 and all traffic flows through host
+        # NGINX on 80/443, so no service ports (5678 etc.) are opened externally.
         ingress = [
             {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
             {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-            {"IpProtocol": "tcp", "FromPort": 5678, "ToPort": 5678, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
             {"IpProtocol": "tcp", "FromPort": 2049, "ToPort": 2049, "IpRanges": [{"CidrIp": vpc.cidr_block}]},
         ]
         # Add HTTPS port when HTTPS is enabled
@@ -597,6 +638,32 @@ class Tier1Orchestrator:
         postgres_password = self._generate_postgres_password()
         efs_dns = f"{efs_id}.efs.{self.region}.amazonaws.com"
 
+        # UserData's enable_https flag controls:
+        # - Tier 1 (dev): self-signed certificate + NGINX reverse proxy
+        # - Service runtime flags (e.g. n8n secure cookies/protocol)
+        # For Tier 2/3, HTTPS is terminated at ALB/CloudFront, so only enable it
+        # when the external endpoint will actually be HTTPS.
+        if config.tier == "dev":
+            userdata_enable_https = bool(config.enable_https and config.tier1_use_self_signed)
+        elif config.enable_cdn:
+            userdata_enable_https = bool(config.enable_https)
+        elif config.enable_alb:
+            userdata_enable_https = bool(config.enable_https and config.alb_certificate_arn is not None)
+        else:
+            userdata_enable_https = False
+
+        # Configure n8n external URL hints so it generates webhooks with the right host.
+        # For Tier 2/3, we can know the intended domain up front (Route 53 hosted zone selection).
+        # For Tier 1, the public IP is only known after launch, so leave unset here.
+        n8n_external_host: str | None = None
+        n8n_external_protocol: Literal["http", "https"] | None = None
+        n8n_proxy_hops: int | None = None
+        if config.tier in {"automation", "gpu"} and config.alb_domain_name:
+            n8n_external_host = config.alb_domain_name
+            n8n_external_protocol = "https" if userdata_enable_https else "http"
+            # Tier 2: ALB only (1 hop). Tier 3: CloudFront -> ALB (2 hops).
+            n8n_proxy_hops = 2 if config.enable_cdn else 1
+
         userdata_config = UserDataConfig(
             efs_id=efs_id,
             efs_dns=efs_dns,
@@ -604,6 +671,10 @@ class Tier1Orchestrator:
             tier=config.tier,
             stack_name=config.stack_name,
             region=self.region,
+            enable_https=userdata_enable_https,
+            n8n_external_host=n8n_external_host,
+            n8n_external_protocol=n8n_external_protocol,
+            n8n_proxy_hops=n8n_proxy_hops,
             postgres_password=postgres_password,
             use_runtime_bundle=config.use_runtime_bundle,
             runtime_bundle_path=config.runtime_bundle_path,
@@ -682,6 +753,16 @@ class Tier1Orchestrator:
         launch_delay = 3
         ec2_resp = None
 
+        # Spot capacity can vanish between the selection dry-run and the real launch.
+        # In that case retry the launch on-demand instead of failing the whole deploy.
+        spot_capacity_errors = (
+            "InsufficientInstanceCapacity",
+            "SpotMaxPriceTooLow",
+            "MaxSpotInstanceCountExceeded",
+            "SpotFleetRequestConfigurationInvalid",
+        )
+        launch_as_spot = selection.is_spot
+
         for attempt in range(max_launch_attempts):
             try:
                 launch_kwargs: dict[str, Any] = {
@@ -711,7 +792,7 @@ class Tier1Orchestrator:
                         },
                     ],
                 }
-                if selection.is_spot:
+                if launch_as_spot:
                     launch_kwargs["InstanceMarketOptions"] = {
                         "MarketType": "spot",
                         "SpotOptions": {
@@ -726,6 +807,15 @@ class Tier1Orchestrator:
                 break  # Success - exit retry loop
             except RuntimeError as e:
                 error_msg = str(e)
+                # Spot capacity vanished between selection and launch: retry on-demand
+                if launch_as_spot and any(code in error_msg for code in spot_capacity_errors):
+                    console.print(
+                        f"{EMOJI['warning']} Spot capacity no longer available at launch "
+                        f"({error_msg}). Retrying with on-demand pricing...",
+                        verbosity="warning",
+                    )
+                    launch_as_spot = False
+                    continue
                 # Check for IAM profile propagation errors
                 if "InvalidParameterValue" in error_msg or "does not exist" in error_msg:
                     if attempt < max_launch_attempts - 1:
@@ -756,6 +846,9 @@ class Tier1Orchestrator:
             "instance_id": instance_id,
             "public_ip": public_ip,
             "private_ip": private_ip,
+            # True when a spot selection had to launch on-demand due to a
+            # capacity error at launch time (cost/state must reflect this).
+            "spot_fallback_to_on_demand": selection.is_spot and not launch_as_spot,
         }
 
     def _build_final_state(
@@ -797,6 +890,13 @@ class Tier1Orchestrator:
         instance_id = instance_info["instance_id"]
         public_ip = instance_info["public_ip"]
         private_ip = instance_info["private_ip"]
+
+        # Direct-instance URL scheme: host NGINX only serves HTTPS on Tier 1 with the
+        # self-signed cert; otherwise (HTTPS disabled, or Tier 2/3 where the ALB/CDN
+        # terminates TLS) the instance itself serves plain HTTP on port 80.
+        # Tier 2/3 orchestrators overwrite n8n_url with the ALB/CloudFront endpoint.
+        instance_https = config.tier == "dev" and bool(config.enable_https and config.tier1_use_self_signed)
+        url_scheme = "https" if instance_https else "http"
 
         hourly_price = selection.price_per_hour
         monthly_price = hourly_price * Decimal("730")
@@ -841,7 +941,7 @@ class Tier1Orchestrator:
             keypair_name=config.keypair_name or "",
             public_ip=public_ip,
             private_ip=private_ip,
-            n8n_url=f"https://{public_ip or private_ip}" if (public_ip or private_ip) else "",
+            n8n_url=f"{url_scheme}://{public_ip or private_ip}" if (public_ip or private_ip) else "",
             cost=cost,
             config=config,
             resource_provenance=resource_provenance,

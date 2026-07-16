@@ -6,6 +6,8 @@ import json
 import time
 from typing import Any
 
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+
 from geusemaker.infra import AWSClientFactory
 from geusemaker.services.base import BaseService
 
@@ -55,6 +57,35 @@ class IAMService(BaseService):
             ],
         }
 
+        # Minimal SSM permissions for the instance to run commands and stream logs.
+        # In AWS we prefer attaching the AWS-managed policy; in Moto that policy ARN
+        # may not exist, so we fall back to this inline equivalent.
+        ssm_inline_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "ssm:UpdateInstanceInformation",
+                        "ssmmessages:CreateControlChannel",
+                        "ssmmessages:CreateDataChannel",
+                        "ssmmessages:OpenControlChannel",
+                        "ssmmessages:OpenDataChannel",
+                        "ec2messages:AcknowledgeMessage",
+                        "ec2messages:DeleteMessage",
+                        "ec2messages:FailMessage",
+                        "ec2messages:GetEndpoint",
+                        "ec2messages:GetMessages",
+                        "ec2messages:SendReply",
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents",
+                    ],
+                    "Resource": "*",
+                }
+            ],
+        }
+
         def _call() -> str:
             # Create the role
             create_resp = self._iam.create_role(
@@ -72,10 +103,21 @@ class IAMService(BaseService):
             )
 
             # Attach AWS managed policy for SSM access (required for log streaming)
-            self._iam.attach_role_policy(
-                RoleName=role_name,
-                PolicyArn="arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-            )
+            try:
+                self._iam.attach_role_policy(
+                    RoleName=role_name,
+                    PolicyArn="arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+                )
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code")
+                if code == "NoSuchEntity":
+                    self._iam.put_role_policy(
+                        RoleName=role_name,
+                        PolicyName="SSMManagedInstanceCore",
+                        PolicyDocument=json.dumps(ssm_inline_policy),
+                    )
+                else:
+                    raise
 
             return create_resp["Role"]["Arn"]  # type: ignore[no-any-return]
 

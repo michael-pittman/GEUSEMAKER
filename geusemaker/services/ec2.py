@@ -217,6 +217,15 @@ class EC2Service(BaseService):
 
         return self._safe_call(_call)
 
+    def describe_subnets(self, subnet_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch subnet details (AZ, MapPublicIpOnLaunch, ...) for the given ids."""
+
+        def _call() -> list[dict[str, Any]]:
+            resp = self._ec2.describe_subnets(SubnetIds=subnet_ids)
+            return resp.get("Subnets", [])  # type: ignore[no-any-return]
+
+        return self._safe_call(_call)
+
     def stop_instance(self, instance_id: str) -> None:
         """Stop an instance."""
 

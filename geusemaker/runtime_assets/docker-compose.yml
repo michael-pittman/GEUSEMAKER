@@ -1,27 +1,8 @@
 version: "3.8"
 
+# NGINX runs on the EC2 host (installed via nginx-setup.sh.j2), not as a container:
+# it must bind host ports 80/443 and proxy to the localhost-bound service ports below.
 services:
-  nginx:
-    image: nginx:alpine
-    container_name: nginx
-    restart: unless-stopped
-    ports:
-      - "443:443"
-      - "80:80"
-    volumes:
-      - /etc/nginx/conf.d:/etc/nginx/conf.d:ro
-      - /etc/nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - n8n
-      - ollama
-      - qdrant
-      - crawl4ai
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "https://localhost/healthz", "--no-check-certificate"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
   n8n:
     image: n8nio/n8n:latest
     container_name: n8n
@@ -29,12 +10,14 @@ services:
     env_file:
       - ./runtime.env
     environment:
-      - N8N_HOST=0.0.0.0
+      - N8N_HOST=${N8N_HOST:-0.0.0.0}
       - N8N_PORT=${N8N_PORT:-5678}
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:${N8N_PORT:-5678}/}
+      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL:-http://localhost:${N8N_PORT:-5678}}
+      - N8N_PROXY_HOPS=${N8N_PROXY_HOPS:-1}
       - N8N_METRICS=${N8N_METRICS:-false}
-      - N8N_SECURE_COOKIE=true
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
       # PostgreSQL database configuration
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -46,13 +29,13 @@ services:
       # Encryption key for secure credential storage (auto-generated if not set)
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
     ports:
-      - "${N8N_PORT:-5678}:5678"
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
     volumes:
       - /mnt/efs/n8n:/home/node/.n8n
     depends_on:
       - postgres
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/healthz"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:5678/healthz >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:5678/healthz >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -69,7 +52,7 @@ services:
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
       - OLLAMA_NUM_GPU=${OLLAMA_NUM_GPU:-1}
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
     # GPU device reservations (requires Docker Compose 1.28.0+ and nvidia-container-toolkit)
@@ -83,7 +66,7 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11434/api/tags >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11434/api/tags >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -95,12 +78,13 @@ services:
     env_file:
       - ./runtime.env
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "6334:6334"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - /mnt/efs/qdrant:/qdrant/storage
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      # Qdrant image has no curl/wget; use bash TCP port check
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -112,9 +96,9 @@ services:
     env_file:
       - ./runtime.env
     ports:
-      - "${CRAWL4AI_PORT:-11235}:11235"
+      - "127.0.0.1:${CRAWL4AI_PORT:-11235}:11235"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11235/health >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11235/health >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3

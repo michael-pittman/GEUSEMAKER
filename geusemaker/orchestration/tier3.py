@@ -57,6 +57,17 @@ class Tier3Orchestrator(Tier2Orchestrator):
         if not config.enable_alb:
             raise OrchestrationError("Tier 3 deployments require enable_alb=True. CloudFront needs ALB as origin.")
 
+        # CloudFront validates the origin's TLS certificate against the origin domain name,
+        # and ALB certificates never cover the raw *.elb.amazonaws.com name.  An HTTPS ALB
+        # origin therefore requires a custom domain covered by the certificate; failing fast
+        # here beats a 30-minute deploy that 502s on every request.
+        if config.enable_https and config.alb_certificate_arn and not config.alb_domain_name:
+            raise OrchestrationError(
+                "Tier 3 HTTPS requires alb_domain_name matching the ALB certificate: CloudFront "
+                "cannot validate the certificate against the raw ALB DNS name. Provide "
+                "alb_domain_name (plus alb_hosted_zone_id for automatic DNS) or set enable_https=false.",
+            )
+
         # Step 1-10: Execute Tier 2 deployment (VPC, SG, EFS, IAM, EC2, ALB)
         console.print(f"{EMOJI['info']} Executing Tier 2 deployment steps...", verbosity="info")
         tier2_state = super()._deploy_impl(config)
@@ -81,6 +92,24 @@ class Tier3Orchestrator(Tier2Orchestrator):
             cloudfront_info["distribution_id"],
             max_wait_minutes=config.rollback_timeout_minutes,
         )
+
+        # Step 12a: Ensure n8n knows its public URL when behind CloudFront -> ALB.
+        # CloudFront's domain is only known after creation, so patch runtime.env post-deploy.
+        # When a custom domain is configured, Tier 2 already set it as the public URL and
+        # Route 53 points it at the ALB -- overwriting it with the ephemeral CloudFront
+        # domain would break webhook/OAuth URLs users registered against their domain.
+        if not config.alb_domain_name:
+            self._best_effort_configure_n8n_public_url(
+                instance_id=tier2_state.instance_id,
+                host=cloudfront_info["cloudfront_domain"],
+                protocol="https",  # CloudFront is always reachable via HTTPS
+                proxy_hops=2,  # CloudFront -> ALB
+            )
+        else:
+            console.print(
+                f"{EMOJI['info']} Keeping n8n public URL on custom domain {config.alb_domain_name}",
+                verbosity="info",
+            )
 
         # Step 13: Build final Tier 3 state with CloudFront info
         final_state = self._build_tier3_state(tier2_state, cloudfront_info)
@@ -118,10 +147,23 @@ class Tier3Orchestrator(Tier2Orchestrator):
         # Create distribution with ALB as origin
         console.print(f"{EMOJI['info']} Creating CloudFront distribution with ALB origin...", verbosity="debug")
 
+        # CloudFront can only use an HTTPS origin when the origin domain is covered by the
+        # ALB certificate, i.e. the custom domain (Route 53 alias -> ALB, created in Tier 2).
+        # Without one, reach the ALB over HTTP on its raw DNS name.
+        https_origin = bool(tier2_state.https_enabled and config.alb_domain_name)
+        origin_domain = config.alb_domain_name if https_origin else tier2_state.alb_dns
+        if not https_origin:
+            console.print(
+                f"{EMOJI['info']} CloudFront will reach the ALB origin over HTTP "
+                "(no custom-domain certificate available for the origin).",
+                verbosity="info",
+            )
+
         # For Tier 3, we use default caching (TTL=0) to forward all requests to ALB
         # Users can customize cache behaviors in future iterations
         cf_resp = self.cloudfront_service.create_distribution_with_alb_origin(
-            alb_dns_name=tier2_state.alb_dns,
+            alb_dns_name=origin_domain,
+            origin_protocol_policy="https-only" if https_origin else "http-only",
             caller_reference=caller_reference,
             enabled=True,
             comment=f"GeuseMaker CDN for {stack_name}",
@@ -196,8 +238,12 @@ class Tier3Orchestrator(Tier2Orchestrator):
         Returns:
             Complete Tier 3 DeploymentState
         """
-        # Update n8n URL to use CloudFront domain
-        n8n_url = f"http://{cloudfront_info['cloudfront_domain']}:80"
+        # Prefer the custom domain (kept as n8n's public URL and DNS target); otherwise
+        # the CloudFront domain is the public entry point (TLS by default).
+        if tier2_state.https_enabled and tier2_state.config.alb_domain_name:
+            n8n_url = f"https://{tier2_state.config.alb_domain_name}"
+        else:
+            n8n_url = f"https://{cloudfront_info['cloudfront_domain']}"
 
         # Update resource provenance
         resource_provenance = tier2_state.resource_provenance.copy()
@@ -235,6 +281,11 @@ class Tier3Orchestrator(Tier2Orchestrator):
             cloudfront_id=cloudfront_info["distribution_id"],
             cloudfront_domain=cloudfront_info["cloudfront_domain"],
             n8n_url=n8n_url,
+            # Carry HTTPS/TLS fields forward (destroy needs certificate_arn for cleanup)
+            https_enabled=tier2_state.https_enabled,
+            https_endpoint=tier2_state.https_endpoint,
+            certificate_arn=tier2_state.certificate_arn,
+            nginx_proxy_enabled=tier2_state.nginx_proxy_enabled,
             cost=tier2_state.cost,
             config=tier2_state.config,
             resource_provenance=resource_provenance,

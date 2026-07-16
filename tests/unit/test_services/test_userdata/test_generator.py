@@ -41,7 +41,15 @@ def test_script_includes_shebang_and_error_handling(base_config: UserDataConfig)
     assert script.startswith("#!/bin/bash")
     assert "set -euo pipefail" in script
     assert "handle_error" in script
-    assert "trap 'handle_error $LINENO' ERR" in script
+    assert "trap 'handle_error ${LINENO:-unknown}' ERR" in script
+
+
+def test_generated_script_contains_no_tabs(base_config: UserDataConfig) -> None:
+    """Tabs can break YAML (docker-compose.yml) and should not appear in generated scripts."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    assert "\t" not in script
 
 
 def test_docker_installation_commands_present(base_config: UserDataConfig) -> None:
@@ -146,6 +154,27 @@ def test_tier_automation_configuration() -> None:
     assert "N8N_METRICS=true" in script
 
 
+def test_tier_automation_external_webhook_host_is_used() -> None:
+    """Automation tier should support setting external host/protocol for webhook URL generation."""
+    config = UserDataConfig(
+        efs_id="fs-12345678",
+        efs_dns="fs-12345678.efs.us-east-1.amazonaws.com",
+        tier="automation",
+        stack_name="test-stack",
+        region="us-east-1",
+        postgres_password="test-password-123",
+        n8n_external_host="n8n.example.com",
+        n8n_external_protocol="https",
+    )
+    gen = UserDataGenerator()
+    script = gen.generate(config)
+
+    assert "N8N_HOST=n8n.example.com" in script
+    assert "N8N_PROTOCOL=https" in script
+    assert "WEBHOOK_URL=https://n8n.example.com/" in script
+    assert "N8N_EDITOR_BASE_URL=https://n8n.example.com" in script
+
+
 def test_tier_gpu_nvidia_runtime() -> None:
     """Test tier 3 (GPU) configures NVIDIA runtime."""
     config = UserDataConfig(
@@ -189,6 +218,14 @@ def test_logging_configuration(base_config: UserDataConfig) -> None:
     assert "/var/log/geusemaker-userdata.log" in script
     assert "exec 1> >(tee -a" in script
     assert "exec 2>&1" in script
+
+
+def test_dpkg_lock_retry_handles_frontend_lock_message(base_config: UserDataConfig) -> None:
+    """Retry helper should handle dpkg's frontend lock wording."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    assert "dpkg frontend lock was locked by another process" in script
 
 
 def test_stack_name_in_script(base_config: UserDataConfig) -> None:
@@ -377,3 +414,37 @@ def test_docker_network_diagnostics_on_failure(base_config: UserDataConfig) -> N
     # Verify error messages are informative
     assert "Docker network hostname resolution failed" in script
     assert "DNS resolution not ready" in script
+
+
+def test_n8n_credentials_use_cli_import(base_config: UserDataConfig) -> None:
+    """Test n8n credential import uses CLI command, not deprecated REST API."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    # Verify CLI import is used
+    assert "n8n import:credentials" in script
+    assert "docker cp" in script
+    assert "--input=" in script
+
+    # Verify deprecated REST API approach is removed
+    assert "N8N_USER_MANAGEMENT_OWNER_API_KEY" not in script
+    assert "N8N_BASIC_AUTH_ACTIVE" not in script
+    assert "/rest/credentials" not in script
+    assert "X-N8N-API-KEY" not in script
+    assert "n8n-cookies" not in script
+
+
+def test_n8n_credentials_include_postgres_and_ollama(base_config: UserDataConfig) -> None:
+    """Test both PostgreSQL and Ollama credentials are preloaded."""
+    gen = UserDataGenerator()
+    script = gen.generate(base_config)
+
+    # PostgreSQL credential
+    assert "PostgreSQL Local" in script
+    assert '"type": "postgres"' in script
+    assert "test-password-123" in script
+
+    # Ollama credential
+    assert "Ollama Local" in script
+    assert '"type": "ollamaApi"' in script
+    assert "http://ollama:11434" in script

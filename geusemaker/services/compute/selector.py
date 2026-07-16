@@ -150,11 +150,12 @@ class InstanceTypeSelector:
                 verbosity="debug",
             )
 
-        # If we reach here, none of the preferred instances are available
-        # Fall back to the first instance type with on-demand
+        # If we reach here, spot was not selected for any candidate (price too high,
+        # volatility, or no capacity). Fall back to the first instance type on-demand.
         fallback_instance = instance_types[0]
         console.print(
-            f"{EMOJI['warning']} No spot instances available, falling back to on-demand {fallback_instance}",
+            f"{EMOJI['warning']} Spot not selected for any {compute_type.upper()} candidate "
+            f"(price, volatility, or capacity); falling back to on-demand {fallback_instance}",
             verbosity="info",
         )
 

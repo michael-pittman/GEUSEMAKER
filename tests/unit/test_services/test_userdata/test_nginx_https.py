@@ -218,11 +218,11 @@ def test_userdata_nginx_service_startup() -> None:
     assert "NGINX failed to start" in script
 
     # Verify final success message
-    assert "NGINX configured and running with HTTPS on port 443" in script
+    assert "NGINX running with self-signed HTTPS on port 443" in script
 
 
-def test_userdata_nginx_skipped_when_https_disabled() -> None:
-    """Test that NGINX installation is skipped when HTTPS is disabled."""
+def test_userdata_nginx_reverse_proxy_when_https_disabled() -> None:
+    """Test that NGINX runs as HTTP reverse proxy when HTTPS is disabled (Tier 2/3 pattern)."""
     generator = UserDataGenerator()
 
     config = UserDataConfig(
@@ -237,12 +237,13 @@ def test_userdata_nginx_skipped_when_https_disabled() -> None:
 
     script = generator.generate(config)
 
-    # Verify NGINX setup is completely skipped
-    assert "Installing NGINX web server" not in script
-    assert "pkg_install nginx" not in script
-    assert "nginx -t" not in script
-    assert "systemctl enable nginx" not in script
-    assert "NGINX_GUARD" not in script
+    # NGINX is still installed for path-based routing to all services
+    assert "Installing NGINX web server" in script
+    assert "NGINX_GUARD" in script
+
+    # But no self-signed certificate setup
+    assert "self-signed" not in script.lower() or "skipping" in script.lower()
+    assert "NGINX running as HTTP reverse proxy on port 80" in script
 
 
 def test_userdata_nginx_guard_file() -> None:

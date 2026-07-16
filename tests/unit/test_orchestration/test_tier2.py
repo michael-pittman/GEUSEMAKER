@@ -13,6 +13,7 @@ from tests.unit.test_orchestration.conftest import (
     StubEFSService,
     StubIAMService,
     StubSecurityGroupService,
+    StubSSMService,
     StubStateManager,
     StubUserDataGenerator,
     StubVPCService,
@@ -52,6 +53,7 @@ def test_tier2_orchestrator_creates_alb_when_enabled() -> None:
         tier="automation",
         instance_type="t3.medium",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -64,6 +66,7 @@ def test_tier2_orchestrator_creates_alb_when_enabled() -> None:
     orchestrator.iam_service = StubIAMService()  # type: ignore[assignment]
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment
@@ -81,6 +84,8 @@ def test_tier2_orchestrator_creates_alb_when_enabled() -> None:
     assert orchestrator.alb_service.listener_created  # type: ignore[attr-defined]
     assert orchestrator.alb_service.targets_registered  # type: ignore[attr-defined]
     assert orchestrator.alb_service.waited_for_healthy  # type: ignore[attr-defined]
+    assert orchestrator.alb_service.last_target_group_port == 80  # type: ignore[attr-defined]
+    assert orchestrator.alb_service.last_registered_port is None  # type: ignore[attr-defined]
 
     # Verify state has ALB information
     assert state.alb_arn is not None
@@ -133,6 +138,7 @@ def test_tier2_orchestrator_requires_minimum_two_subnets() -> None:
         tier="automation",
         instance_type="t3.medium",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -145,6 +151,7 @@ def test_tier2_orchestrator_requires_minimum_two_subnets() -> None:
     orchestrator.iam_service = StubIAMService()  # type: ignore[assignment]
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Deployment should fail with meaningful error
@@ -159,6 +166,7 @@ def test_tier2_orchestrator_n8n_url_uses_alb_dns() -> None:
         tier="automation",
         instance_type="t3.medium",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -171,6 +179,7 @@ def test_tier2_orchestrator_n8n_url_uses_alb_dns() -> None:
     orchestrator.iam_service = StubIAMService()  # type: ignore[assignment]
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment
@@ -180,3 +189,39 @@ def test_tier2_orchestrator_n8n_url_uses_alb_dns() -> None:
     assert "elb.amazonaws.com" in state.n8n_url
     assert state.n8n_url.startswith("http://")
     assert ":80" in state.n8n_url
+
+
+def test_tier2_orchestrator_degrades_to_http_without_certificate() -> None:
+    """Tier 2 HTTPS without an ACM certificate ARN degrades to an HTTP-only ALB.
+
+    enable_https defaults to True, so configs written before HTTPS support must
+    keep deploying instead of failing fast.
+    """
+    config = DeploymentConfig(
+        stack_name="test-tier2-https-requires-cert",
+        tier="automation",
+        instance_type="t3.medium",
+        enable_alb=True,
+        enable_https=True,
+        alb_certificate_arn=None,
+    )
+
+    state_manager = StubStateManager()
+    orchestrator = Tier2Orchestrator(client_factory=None, region="us-east-1", state_manager=state_manager)  # type: ignore[arg-type]
+
+    orchestrator.vpc_service = StubVPCService()  # type: ignore[assignment]
+    orchestrator.sg_service = StubSecurityGroupService()  # type: ignore[assignment]
+    orchestrator.efs_service = StubEFSService()  # type: ignore[assignment]
+    orchestrator.iam_service = StubIAMService()  # type: ignore[assignment]
+    orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
+    orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
+    orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
+
+    state = orchestrator.deploy(config, enable_rollback=False)
+
+    # ALB is created, but HTTPS is not enabled and the URL stays HTTP.
+    assert orchestrator.alb_service.alb_created  # type: ignore[attr-defined]
+    assert state.https_enabled is False
+    assert state.https_endpoint is None
+    assert state.n8n_url is not None and state.n8n_url.startswith("http://")

@@ -14,6 +14,7 @@ from tests.unit.test_orchestration.conftest import (
     StubEFSService,
     StubIAMService,
     StubSecurityGroupService,
+    StubSSMService,
     StubStateManager,
     StubUserDataGenerator,
     StubVPCService,
@@ -27,6 +28,7 @@ def test_tier3_orchestrator_creates_cloudfront_with_alb() -> None:
         tier="gpu",
         instance_type="g4dn.xlarge",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -40,6 +42,7 @@ def test_tier3_orchestrator_creates_cloudfront_with_alb() -> None:
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
     orchestrator.cloudfront_service = StubCloudFrontService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment
@@ -92,6 +95,7 @@ def test_tier3_orchestrator_accepts_gpu_tier() -> None:
         tier="gpu",
         instance_type="g4dn.xlarge",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -105,6 +109,7 @@ def test_tier3_orchestrator_accepts_gpu_tier() -> None:
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
     orchestrator.cloudfront_service = StubCloudFrontService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment - should succeed
@@ -122,6 +127,7 @@ def test_tier3_orchestrator_accepts_automation_tier() -> None:
         tier="automation",
         instance_type="t3.medium",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -135,6 +141,7 @@ def test_tier3_orchestrator_accepts_automation_tier() -> None:
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
     orchestrator.cloudfront_service = StubCloudFrontService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment - should succeed
@@ -152,6 +159,7 @@ def test_tier3_orchestrator_n8n_url_uses_cloudfront_domain() -> None:
         tier="gpu",
         instance_type="g4dn.xlarge",
         enable_alb=True,
+        enable_https=False,
     )
 
     state_manager = StubStateManager()
@@ -165,6 +173,7 @@ def test_tier3_orchestrator_n8n_url_uses_cloudfront_domain() -> None:
     orchestrator.ec2_service = StubEC2Service()  # type: ignore[assignment]
     orchestrator.alb_service = StubALBService()  # type: ignore[assignment]
     orchestrator.cloudfront_service = StubCloudFrontService()  # type: ignore[assignment]
+    orchestrator.ssm_service = StubSSMService()  # type: ignore[assignment]
     orchestrator.userdata_generator = StubUserDataGenerator()  # type: ignore[assignment]
 
     # Execute deployment
@@ -172,5 +181,5 @@ def test_tier3_orchestrator_n8n_url_uses_cloudfront_domain() -> None:
 
     # Verify n8n URL uses CloudFront domain
     assert "cloudfront.net" in state.n8n_url
-    assert state.n8n_url.startswith("http://")
-    assert ":80" in state.n8n_url
+    assert state.n8n_url.startswith("https://")
+    assert ":80" not in state.n8n_url

@@ -229,6 +229,34 @@ class StubEC2Service:
         }
 
 
+class StubSSMService:
+    """Stub SSM service used to avoid real AWS calls in Tier2/Tier3 orchestration tests."""
+
+    def __init__(self, ssm_ready: bool = True, userdata_status: str = "success") -> None:
+        self.ssm_ready = ssm_ready
+        self.userdata_status = userdata_status
+        self.waited_for_ssm = False
+        self.waited_for_userdata = False
+
+    def wait_for_ssm_agent(
+        self,
+        instance_id: str,  # noqa: ARG002
+        timeout_seconds: int = 60,  # noqa: ARG002
+        poll_interval: float = 5.0,  # noqa: ARG002
+    ) -> bool:
+        self.waited_for_ssm = True
+        return self.ssm_ready
+
+    def wait_for_userdata_completion(
+        self,
+        instance_id: str,  # noqa: ARG002
+        timeout_seconds: int = 600,  # noqa: ARG002
+        poll_interval: float = 10.0,  # noqa: ARG002
+    ) -> str:
+        self.waited_for_userdata = True
+        return self.userdata_status
+
+
 class StubALBService:
     """Stub ALB service capturing creation and health checks."""
 
@@ -238,6 +266,8 @@ class StubALBService:
         self.listener_created = False
         self.targets_registered = False
         self.waited_for_healthy = False
+        self.last_target_group_port: int | None = None
+        self.last_registered_port: int | None = None
 
     def create_alb(
         self,
@@ -253,6 +283,7 @@ class StubALBService:
                 {
                     "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/test-alb/1234567890abcdef",
                     "DNSName": "test-alb-1234567890.us-east-1.elb.amazonaws.com",
+                    "CanonicalHostedZoneId": "Z35SXDOTRQ7X7K",
                 },
             ],
         }
@@ -271,6 +302,7 @@ class StubALBService:
         tags=None,  # type: ignore[no-untyped-def]
     ):  # type: ignore[no-untyped-def]  # noqa: ARG002
         self.target_group_created = True
+        self.last_target_group_port = port
         return {
             "TargetGroups": [
                 {
@@ -302,6 +334,7 @@ class StubALBService:
         port: int | None = None,
     ):  # type: ignore[no-untyped-def]  # noqa: ARG002
         self.targets_registered = True
+        self.last_registered_port = port
         return {}
 
     def wait_for_healthy(

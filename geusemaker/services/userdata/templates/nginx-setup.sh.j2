@@ -1,9 +1,10 @@
-{% if enable_https and tier == "dev" %}
 # ===================================
 # NGINX Installation and Startup
 # ===================================
-# NOTE: This runs AFTER Docker services are started to ensure containers
-# are listening on localhost ports before NGINX starts proxying traffic
+# Runs AFTER Docker services are started to ensure containers
+# are listening on localhost ports before NGINX starts proxying traffic.
+# - Tier 1 (dev): HTTPS on :443 with self-signed cert + HTTP :80 redirect
+# - Tier 2/3: HTTP on :80 reverse proxy (ALB terminates TLS)
 
 NGINX_GUARD="/var/lib/geusemaker/nginx-configured"
 if [ -f "$NGINX_GUARD" ]; then
@@ -16,46 +17,41 @@ else
         yum install -y nginx
     fi
 
-    # Verify NGINX is installed
     if ! command -v nginx >/dev/null 2>&1; then
         echo "ERROR: NGINX installation failed"
         exit 1
     fi
 
-    # Validate NGINX configuration (Docker containers must be running for hostname resolution)
+    # Remove default NGINX site that may conflict with our config
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+
     echo "Validating NGINX configuration..."
     if ! nginx -t 2>&1; then
         echo "ERROR: NGINX configuration validation failed"
         echo "Check /etc/nginx/conf.d/default.conf for syntax errors"
-        echo "Ensure Docker containers (n8n, ollama, qdrant, crawl4ai) are running"
         exit 1
     fi
 
-    # Enable and start NGINX service
     echo "Starting NGINX service..."
     if command -v systemctl >/dev/null 2>&1; then
-        # systemd-based systems (Amazon Linux 2023, Ubuntu 22.04+)
         systemctl enable nginx
         systemctl start nginx
 
-        # Verify NGINX is running
         if ! systemctl is-active --quiet nginx; then
             echo "ERROR: NGINX failed to start"
             systemctl status nginx || true
             exit 1
         fi
     else
-        # SysV init systems (fallback)
         service nginx start
         chkconfig nginx on 2>/dev/null || true
     fi
 
-    echo "NGINX configured and running with HTTPS on port 443"
-    echo "Certificate: /etc/nginx/ssl/selfsigned.crt"
-    echo "Private key: /etc/nginx/ssl/selfsigned.key"
+{% if enable_https and tier == "dev" %}
+    echo "NGINX running with self-signed HTTPS on port 443"
+{% else %}
+    echo "NGINX running as HTTP reverse proxy on port 80 (ALB terminates TLS)"
+{% endif %}
 
     touch "$NGINX_GUARD"
 fi
-{% else %}
-echo "HTTPS not enabled or not Tier 1, skipping NGINX setup"
-{% endif %}

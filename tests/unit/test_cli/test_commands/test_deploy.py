@@ -39,12 +39,15 @@ class FailingValidator(PassingValidator):
 
 class DummyOrchestrator:
     last_config = None
+    last_selection = None
 
     def __init__(self, *args: object, **kwargs: object) -> None:  # noqa: D401
         pass
 
     def deploy(self, config, enable_rollback: bool = True):  # type: ignore[no-untyped-def] # noqa: ARG002
         DummyOrchestrator.last_config = config
+        # The runner pre-selects compute and stamps it onto the orchestrator.
+        DummyOrchestrator.last_selection = getattr(self, "_preselected_selection", None)
         return type(
             "State",
             (),
@@ -93,6 +96,36 @@ def test_deploy_shows_validation_report_and_fails(monkeypatch):
 
     assert result.exit_code == 2
     assert "FAIL" in result.output
+
+
+def test_deploy_no_spot_flag_selects_on_demand(monkeypatch):
+    """--no-spot must flow through the runner into config and the preselected compute choice."""
+    DummyOrchestrator.last_config = None
+    DummyOrchestrator.last_selection = None
+    monkeypatch.setattr("geusemaker.cli.interactive.runner.PreDeploymentValidator", PassingValidator)
+    monkeypatch.setattr("geusemaker.cli.interactive.runner.Tier1Orchestrator", DummyOrchestrator)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "deploy",
+            "--stack-name",
+            "demo",
+            "--tier",
+            "dev",
+            "--region",
+            "us-east-1",
+            "--no-spot",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert DummyOrchestrator.last_config is not None
+    assert DummyOrchestrator.last_config.use_spot is False
+    assert DummyOrchestrator.last_selection is not None
+    assert DummyOrchestrator.last_selection.is_spot is False
+    assert DummyOrchestrator.last_selection.selection_reason == "User requested on-demand"
 
 
 def test_deploy_accepts_ami_configuration(monkeypatch):

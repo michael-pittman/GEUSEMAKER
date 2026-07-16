@@ -52,6 +52,21 @@ else
             echo "N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}"
             echo "DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}"
             echo "NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}"
+{% if n8n_external_host %}
+            echo "N8N_HOST={{ n8n_external_host }}"
+            echo "N8N_PROTOCOL={{ n8n_external_protocol or 'http' }}"
+            echo "WEBHOOK_URL={{ n8n_external_protocol or 'http' }}://{{ n8n_external_host }}/"
+            echo "N8N_EDITOR_BASE_URL={{ n8n_external_protocol or 'http' }}://{{ n8n_external_host }}"
+            echo "N8N_SECURE_COOKIE={{ 'true' if (n8n_external_protocol or 'http') == 'https' else 'false' }}"
+            echo "N8N_PROXY_HOPS={{ n8n_proxy_hops if n8n_proxy_hops is not none else 1 }}"
+{% else %}
+            echo "N8N_HOST=0.0.0.0"
+            echo "N8N_PROTOCOL={{ 'https' if enable_https else 'http' }}"
+            echo "WEBHOOK_URL={{ 'https' if enable_https else 'http' }}://localhost:${N8N_PORT:-5678}/"
+            echo "N8N_EDITOR_BASE_URL={{ 'https' if enable_https else 'http' }}://localhost:${N8N_PORT:-5678}"
+            echo "N8N_SECURE_COOKIE={{ 'true' if enable_https else 'false' }}"
+            echo "N8N_PROXY_HOPS=1"
+{% endif %}
         } > "$RUNTIME_ENV_FILE"
 {% for key, value in custom_env.items() %}
         printf "%s\n" "{{ key }}={{ value }}" >> "$RUNTIME_ENV_FILE"
@@ -97,12 +112,14 @@ services:
     env_file:
       - ./runtime.env
     environment:
-      - N8N_HOST=0.0.0.0
+      - N8N_HOST=${N8N_HOST:-0.0.0.0}
       - N8N_PORT=${N8N_PORT:-5678}
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=http://localhost:${N8N_PORT:-5678}/
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:${N8N_PORT:-5678}/}
+      - N8N_EDITOR_BASE_URL=${N8N_EDITOR_BASE_URL:-http://localhost:${N8N_PORT:-5678}}
+      - N8N_PROXY_HOPS=${N8N_PROXY_HOPS:-1}
       - N8N_METRICS=${N8N_METRICS:-false}
-      - N8N_SECURE_COOKIE=true
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
       # PostgreSQL database configuration
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
@@ -114,13 +131,13 @@ services:
       # Encryption key for secure credential storage (auto-generated if not set)
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
     ports:
-      - "${N8N_PORT:-5678}:5678"
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
     volumes:
       - /mnt/efs/n8n:/home/node/.n8n
     depends_on:
       - postgres
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5678/healthz"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:5678/healthz >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:5678/healthz >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -135,7 +152,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
 {% if tier == "gpu" %}
@@ -150,7 +167,7 @@ services:
               capabilities: [gpu]
 {% endif %}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11434/api/tags >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11434/api/tags >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -162,12 +179,13 @@ services:
     env_file:
       - ./runtime.env
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "6334:6334"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - /mnt/efs/qdrant:/qdrant/storage
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      # Qdrant image has no curl/wget; use bash TCP port check
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -179,9 +197,9 @@ services:
     env_file:
       - ./runtime.env
     ports:
-      - "${CRAWL4AI_PORT:-11235}:11235"
+      - "127.0.0.1:${CRAWL4AI_PORT:-11235}:11235"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11235/health >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11235/health >/dev/null; else exit 1; fi"]
       interval: 30s
       timeout: 10s
       retries: 3

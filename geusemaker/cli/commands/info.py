@@ -52,7 +52,7 @@ def info(stack_name: str, output: str, state_dir: str | None, host: str | None, 
 
     resolved_host = host or state.public_ip or state.private_ip
     display_host = resolved_host or "unknown"
-    
+
     # Build endpoints based on tier
     if state.config.tier == "dev":
         # Tier 1: HTTPS through Nginx proxy
@@ -78,13 +78,14 @@ def info(stack_name: str, output: str, state_dir: str | None, host: str | None, 
                 "crawl4ai": f"{base_url}/crawl4ai/",
             }
         else:
-            # Fallback to direct IP if n8n_url not set
+            # Fallback to instance NGINX proxy if n8n_url not set
+            # (service ports bind to 127.0.0.1 and are not reachable directly)
             endpoints = {
-                "n8n": f"http://{display_host}:5678",
-                "ollama": f"http://{display_host}:11434",
-                "qdrant": f"http://{display_host}:6333",
+                "n8n": f"http://{display_host}/",
+                "ollama": f"http://{display_host}/api/ollama/",
+                "qdrant": f"http://{display_host}/qdrant/",
                 "qdrant-ui": f"http://{display_host}/qdrant-ui/",
-                "crawl4ai": f"http://{display_host}:11235",
+                "crawl4ai": f"http://{display_host}/crawl4ai/",
             }
     else:  # Tier 3 (gpu)
         # Tier 3: Use CloudFront domain from n8n_url
@@ -99,13 +100,14 @@ def info(stack_name: str, output: str, state_dir: str | None, host: str | None, 
                 "crawl4ai": f"{base_url}/crawl4ai/",
             }
         else:
-            # Fallback to direct IP if n8n_url not set
+            # Fallback to instance NGINX proxy if n8n_url not set
+            # (service ports bind to 127.0.0.1 and are not reachable directly)
             endpoints = {
-                "n8n": f"http://{display_host}:5678",
-                "ollama": f"http://{display_host}:11434",
-                "qdrant": f"http://{display_host}:6333",
+                "n8n": f"http://{display_host}/",
+                "ollama": f"http://{display_host}/api/ollama/",
+                "qdrant": f"http://{display_host}/qdrant/",
                 "qdrant-ui": f"http://{display_host}/qdrant-ui/",
-                "crawl4ai": f"http://{display_host}:11235",
+                "crawl4ai": f"http://{display_host}/crawl4ai/",
             }
     ssh_info = {
         "user": "ec2-user",

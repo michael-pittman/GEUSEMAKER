@@ -35,7 +35,7 @@ FALLBACK_ON_DEMAND = {
     "g4dn.xlarge": Decimal("0.526"),
 }
 DEFAULT_ON_DEMAND = Decimal("0.15")
-DEFAULT_SPOT_DISCOUNT = Decimal("0.4")  # 60% cheaper than on-demand.
+DEFAULT_SPOT_DISCOUNT = Decimal("0.4")  # Estimated spot price = 60% of on-demand (40% discount).
 
 
 class EC2PricingService(BaseService):

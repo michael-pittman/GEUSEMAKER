@@ -13,10 +13,16 @@ from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration.errors import OrchestrationError
 from geusemaker.orchestration.tier1 import Tier1Orchestrator
 from geusemaker.services.alb import ALBService
+from geusemaker.services.route53 import Route53Service
+from geusemaker.services.ssm import SSMService
 
 
 class Tier2Orchestrator(Tier1Orchestrator):
     """Coordinate Tier 2 deployments with ALB support."""
+
+    # NGINX reverse proxy port on the EC2 host.  All tiers now run NGINX for
+    # path-based routing; the ALB target group forwards to this port.
+    _NGINX_PORT = 80
 
     def __init__(
         self,
@@ -34,6 +40,8 @@ class Tier2Orchestrator(Tier1Orchestrator):
             spot_selector=spot_selector,
         )
         self.alb_service = ALBService(self.client_factory, region=region)
+        # Used to gate ALB registration until instance init completes (best-effort; may be stubbed in tests).
+        self.ssm_service = SSMService(self.client_factory, region=region)
 
     def _deploy_impl(self, config: DeploymentConfig) -> DeploymentState:
         """
@@ -67,21 +75,127 @@ class Tier2Orchestrator(Tier1Orchestrator):
             )
             return tier1_state
 
+        # Tier 2 HTTPS is terminated at the ALB, which requires an ACM certificate.
+        # Without a certificate ARN we can still serve HTTP, so degrade instead of failing
+        # (pre-HTTPS configs set enable_https=True by default).
+        if config.enable_https and not config.alb_certificate_arn:
+            console.print(
+                f"{EMOJI['warning']} No ACM certificate ARN available; ALB will serve HTTP only. "
+                "Provide alb_certificate_arn (regional ACM cert) to enable HTTPS.",
+                verbosity="warning",
+            )
+
         self._check_timeout(start_time, config.rollback_timeout_minutes, "before ALB setup")
 
-        # Step 8: Create ALB infrastructure
+        # Step 8: Wait for UserData to complete before registering with ALB
+        console.print(f"{EMOJI['info']} Waiting for instance initialization to complete...", verbosity="info")
+
+        ssm_ready = False
+        try:
+            console.print(f"{EMOJI['info']} Waiting for SSM agent to be ready...", verbosity="debug")
+            ssm_ready = self.ssm_service.wait_for_ssm_agent(
+                tier1_state.instance_id,
+                timeout_seconds=120,  # 2 minutes max for SSM agent
+            )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"{EMOJI['warning']} SSM check failed ({exc}); proceeding with ALB registration...",
+                verbosity="warning",
+            )
+
+        if not ssm_ready:
+            console.print(
+                f"{EMOJI['warning']} SSM agent not ready, proceeding with ALB registration...",
+                verbosity="warning",
+            )
+        else:
+            try:
+                userdata_status = self.ssm_service.wait_for_userdata_completion(
+                    tier1_state.instance_id,
+                    timeout_seconds=600,  # 10 minutes max
+                    poll_interval=15.0,  # Check every 15 seconds
+                )
+            except Exception as exc:  # noqa: BLE001
+                console.print(
+                    f"{EMOJI['warning']} UserData completion check failed ({exc}); proceeding with ALB registration...",
+                    verbosity="warning",
+                )
+                userdata_status = "timeout"
+
+            if userdata_status == "error":
+                raise OrchestrationError("UserData script failed. Check instance logs for details.")
+            if userdata_status == "timeout":
+                console.print(
+                    f"{EMOJI['warning']} UserData completion timeout, proceeding with ALB registration anyway...",
+                    verbosity="warning",
+                )
+            else:
+                console.print(f"{EMOJI['check']} Instance initialization complete", verbosity="info")
+
+        # Step 9: Create ALB infrastructure
         console.print(f"\n{EMOJI['rocket']} Creating Application Load Balancer...", verbosity="info")
         alb_info = self._create_alb(config, tier1_state)
 
-        # Step 9: Register EC2 instance with target group
+        # Step 9b: Save state with ALB info immediately so rollback can clean it up
+        # This is critical -- if health checks or registration fail, the ALB
+        # must be recorded in state so DestructionService can delete it.
+        partial_tier2_state = self._build_tier2_state(tier1_state, alb_info)
+        # Use a valid in-progress status; "deploying" is not part of the persisted schema.
+        partial_tier2_state.status = "creating"
+        asyncio.run(self.state_manager.save_deployment(partial_tier2_state))
+
+        # Step 10: Register EC2 instance with target group
         console.print(f"{EMOJI['info']} Registering EC2 instance with target group...", verbosity="info")
         self._register_instance(tier1_state.instance_id, alb_info)
 
-        # Step 10: Wait for instance to become healthy
+        # Step 11: Wait for instance to become healthy
         console.print(f"{EMOJI['check']} Waiting for target health checks to pass...", verbosity="info")
         self._wait_for_healthy_targets(alb_info["target_group_arn"], [tier1_state.instance_id])
 
-        # Step 11: Build final Tier 2 state with ALB info
+        # Step 11a: Ensure n8n knows its public URL when behind an ALB.
+        # UserData runs before the ALB exists, so Tier 2 must patch runtime.env after ALB DNS/domain is known.
+        self._best_effort_configure_n8n_public_url(
+            instance_id=tier1_state.instance_id,
+            host=(config.alb_domain_name or alb_info["alb_dns"]),
+            protocol=("https" if alb_info.get("https_enabled") else "http"),
+            proxy_hops=(2 if config.enable_cdn else 1),
+        )
+
+        # Step 11b: Bind custom domain (Route 53 ALIAS) if provided.
+        # Note: The ACM validation record was created earlier; this creates the user-facing A/AAAA.
+        if config.enable_https and config.alb_domain_name and config.alb_hosted_zone_id:
+            alb_zone_id = alb_info.get("alb_zone_id")
+            if alb_zone_id:
+                console.print(
+                    f"{EMOJI['info']} Creating Route 53 ALIAS record for {config.alb_domain_name}...",
+                    verbosity="info",
+                )
+                r53 = Route53Service(self.client_factory)
+                change_a = r53.upsert_alias(
+                    hosted_zone_id=config.alb_hosted_zone_id,
+                    record_name=config.alb_domain_name,
+                    dns_name=alb_info["alb_dns"],
+                    target_hosted_zone_id=alb_zone_id,
+                    record_type="A",
+                )
+                if change_a:
+                    r53.wait_for_change(change_a)
+                change_aaaa = r53.upsert_alias(
+                    hosted_zone_id=config.alb_hosted_zone_id,
+                    record_name=config.alb_domain_name,
+                    dns_name=alb_info["alb_dns"],
+                    target_hosted_zone_id=alb_zone_id,
+                    record_type="AAAA",
+                )
+                if change_aaaa:
+                    r53.wait_for_change(change_aaaa)
+            else:
+                console.print(
+                    f"{EMOJI['warning']} ALB hosted zone id missing; skipping Route 53 domain binding.",
+                    verbosity="warning",
+                )
+
+        # Step 12: Build final Tier 2 state with ALB info
         final_state = self._build_tier2_state(tier1_state, alb_info)
         asyncio.run(self.state_manager.save_deployment(final_state))
 
@@ -92,6 +206,76 @@ class Tier2Orchestrator(Tier1Orchestrator):
         console.print(f"{EMOJI['info']} ALB DNS: {alb_info['alb_dns']}", verbosity="info")
 
         return final_state
+
+    def _best_effort_configure_n8n_public_url(
+        self,
+        instance_id: str,
+        host: str,
+        protocol: str,
+        proxy_hops: int,
+    ) -> None:
+        """
+        Patch runtime.env on the instance so n8n generates correct webhook URLs behind proxies (ALB/CDN).
+
+        Notes:
+        - n8n uses WEBHOOK_URL and N8N_EDITOR_BASE_URL.
+        - This is best-effort: deployment should not fail if SSM is unavailable.
+        """
+        try:
+            url = f"{protocol}://{host}"
+            env_updates = {
+                "N8N_HOST": host,
+                "N8N_PROTOCOL": protocol,
+                "WEBHOOK_URL": f"{url}/",
+                "N8N_EDITOR_BASE_URL": url,
+                "N8N_SECURE_COOKIE": "true" if protocol == "https" else "false",
+                "N8N_PROXY_HOPS": str(proxy_hops),
+            }
+
+            # Prefer runtime bundle location when present.
+            # UserData uses COMPOSE_FILE_PATH in /root (no bundle) or /opt/geusemaker/runtime (bundle).
+            cmd_lines = [
+                "set -euo pipefail",
+                'if [ -f /opt/geusemaker/runtime/runtime.env ]; then ENV_FILE="/opt/geusemaker/runtime/runtime.env"; COMPOSE_FILE="/opt/geusemaker/runtime/docker-compose.yml"; '
+                'else ENV_FILE="/root/runtime.env"; COMPOSE_FILE="/root/docker-compose.yml"; fi',
+                'if [ ! -f "$ENV_FILE" ]; then echo "runtime.env not found at $ENV_FILE" >&2; exit 2; fi',
+                'TMP="$(mktemp)"',
+                # Drop existing keys then append new values to avoid partial/duplicate updates.
+                r'grep -vE "^(N8N_HOST|N8N_PROTOCOL|WEBHOOK_URL|N8N_EDITOR_BASE_URL|N8N_SECURE_COOKIE|N8N_PROXY_HOPS)=" "$ENV_FILE" > "$TMP" || true',
+            ]
+            for k, v in env_updates.items():
+                # Basic shell-safe (no spaces expected in these values).
+                cmd_lines.append(f'printf "%s\\n" "{k}={v}" >> "$TMP"')
+            cmd_lines += [
+                'mv "$TMP" "$ENV_FILE"',
+                'cd "$(dirname "$COMPOSE_FILE")"',
+                # Export runtime.env into the shell: compose interpolation (e.g.
+                # ${POSTGRES_PASSWORD:?...}) and the compose "environment:" entries read the
+                # process env, not env_file, so without this the restart fails or keeps defaults.
+                "set -a; while IFS='=' read -r k v; do "
+                '[ -z "$k" ] && continue; case "$k" in "#"*) continue;; esac; export "$k=$v"; '
+                'done < "$ENV_FILE"; set +a',
+                # Recreate n8n so the updated env takes effect.
+                'if command -v docker-compose >/dev/null 2>&1; then docker-compose -f "$COMPOSE_FILE" up -d --force-recreate n8n; '
+                'else docker compose -f "$COMPOSE_FILE" up -d --force-recreate n8n; fi',
+            ]
+
+            result = self.ssm_service.run_shell_script(
+                instance_id=instance_id,
+                commands=cmd_lines,
+                comment="Configure n8n public URL env (WEBHOOK_URL/N8N_EDITOR_BASE_URL)",
+                timeout_seconds=180,
+            )
+            if result.get("Status") != "Success":
+                console.print(
+                    f"{EMOJI['warning']} Failed to configure n8n public URL via SSM (status={result.get('Status')}).",
+                    verbosity="warning",
+                )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"{EMOJI['warning']} Best-effort n8n public URL configuration failed: {exc}",
+                verbosity="warning",
+            )
 
     def _create_alb(
         self,
@@ -129,22 +313,24 @@ class Tier2Orchestrator(Tier1Orchestrator):
         console.print(f"{EMOJI['info']} Creating load balancer...", verbosity="debug")
         alb_resp = self.alb_service.create_alb(
             name=f"{stack_name}-alb",
-            subnets=tier1_state.subnet_ids[:2],  # Use first 2 subnets
+            subnets=self._select_alb_subnets(tier1_state),
             security_groups=[tier1_state.security_group_id],
             scheme="internet-facing",
             tags=tags,
         )
         alb_arn = alb_resp["LoadBalancers"][0]["LoadBalancerArn"]
         alb_dns = alb_resp["LoadBalancers"][0]["DNSName"]
+        alb_zone_id = alb_resp["LoadBalancers"][0].get("CanonicalHostedZoneId")
 
         # Create target group
         console.print(f"{EMOJI['info']} Creating target group...", verbosity="debug")
         tg_resp = self.alb_service.create_target_group(
             name=f"{stack_name}-tg",
             vpc_id=tier1_state.vpc_id,
-            port=80,
+            # NGINX reverse proxy on the host handles path routing to all services.
+            port=self._NGINX_PORT,
             protocol="HTTP",
-            health_check_path="/",
+            health_check_path="/healthz",
             health_check_interval=30,
             health_check_timeout=5,
             healthy_threshold=2,
@@ -205,11 +391,47 @@ class Tier2Orchestrator(Tier1Orchestrator):
         return {
             "alb_arn": alb_arn,
             "alb_dns": alb_dns,
+            "alb_zone_id": alb_zone_id,
             "target_group_arn": target_group_arn,
             "listener_arn": listener_arn,
             "https_listener_arn": https_listener_arn,
             "https_enabled": https_enabled,
         }
+
+    def _select_alb_subnets(self, tier1_state: DeploymentState) -> list[str]:
+        """Pick two subnets for the internet-facing ALB, preferring public ones in distinct AZs.
+
+        tier1 state stores public and private subnet ids in one list, so blindly
+        slicing can hand the ALB a private subnet or two subnets in the same AZ
+        (both rejected or broken).  Falls back to the first two ids when subnet
+        details cannot be fetched (e.g. stub services in tests).
+        """
+        subnet_ids = tier1_state.subnet_ids
+        describe = getattr(self.ec2_service, "describe_subnets", None)
+        if describe is None:
+            return subnet_ids[:2]
+        try:
+            subnets = describe(subnet_ids)
+        except RuntimeError as exc:
+            console.print(
+                f"{EMOJI['warning']} Could not inspect subnets for ALB placement ({exc}); using first two.",
+                verbosity="debug",
+            )
+            return subnet_ids[:2]
+
+        # Public subnets first, then one subnet per AZ.
+        ordered = sorted(subnets, key=lambda s: not s.get("MapPublicIpOnLaunch", False))
+        chosen: list[str] = []
+        seen_azs: set[str] = set()
+        for subnet in ordered:
+            az = subnet.get("AvailabilityZone")
+            if not az or az in seen_azs:
+                continue
+            chosen.append(subnet["SubnetId"])
+            seen_azs.add(az)
+            if len(chosen) == 2:
+                return chosen
+        return subnet_ids[:2]
 
     def _register_instance(
         self,
@@ -229,7 +451,6 @@ class Tier2Orchestrator(Tier1Orchestrator):
         self.alb_service.register_targets(
             target_group_arn=alb_info["target_group_arn"],
             instance_ids=[instance_id],
-            port=80,
         )
         console.print(f"{EMOJI['check']} Instance {instance_id} registered", verbosity="debug")
 
@@ -237,7 +458,7 @@ class Tier2Orchestrator(Tier1Orchestrator):
         self,
         target_group_arn: str,
         instance_ids: list[str],
-        max_wait_seconds: int = 300,
+        max_wait_seconds: int = 600,  # Increased to 10 minutes to allow for UserData completion
     ) -> None:
         """
         Wait for registered targets to pass health checks.
@@ -280,7 +501,9 @@ class Tier2Orchestrator(Tier1Orchestrator):
         # Build n8n URL and HTTPS endpoint based on HTTPS configuration
         https_enabled = alb_info.get("https_enabled", False)
         if https_enabled:
-            n8n_url = f"https://{alb_info['alb_dns']}"
+            # Prefer user-provided custom domain when available.
+            domain = tier1_state.config.alb_domain_name or alb_info["alb_dns"]
+            n8n_url = f"https://{domain}"
             https_endpoint = n8n_url
         else:
             n8n_url = f"http://{alb_info['alb_dns']}:80"
@@ -327,7 +550,7 @@ class Tier2Orchestrator(Tier1Orchestrator):
             https_enabled=https_enabled,
             https_endpoint=https_endpoint,
             certificate_arn=tier1_state.config.alb_certificate_arn if https_enabled else None,
-            nginx_proxy_enabled=False,  # Tier 2 uses ALB, not NGINX proxy
+            nginx_proxy_enabled=True,  # NGINX on host handles path routing; ALB terminates TLS
             cost=tier1_state.cost,
             config=tier1_state.config,
             resource_provenance=resource_provenance,

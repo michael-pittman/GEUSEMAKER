@@ -15,9 +15,11 @@ from geusemaker.cli.display.validation import render_validation_report
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3Orchestrator
+from geusemaker.services.acm import ACMService
 from geusemaker.services.compute.spot import SpotSelectionService
 from geusemaker.services.cost import BudgetService, CostEstimator
 from geusemaker.services.pricing import PricingService
+from geusemaker.services.route53 import Route53Service
 from geusemaker.services.ssm import SSMService
 from geusemaker.services.validation import PreDeploymentValidator
 
@@ -162,6 +164,70 @@ class DeploymentRunner:
                     verbosity="error",
                 )
                 raise DeploymentValidationFailed(report)
+
+        # Tier 2/3 HTTPS: auto-provision an ALB ACM cert via Route 53 when requested.
+        if config.enable_https and config.enable_alb and not config.alb_certificate_arn:
+            if config.alb_domain_name and config.alb_hosted_zone_id:
+                if progress:
+                    try:
+                        progress.advance("Provisioning ACM certificate")
+                    except AttributeError:
+                        pass
+
+                console.print(
+                    f"{EMOJI['info']} Requesting ACM certificate for {config.alb_domain_name} (DNS validation)...",
+                    verbosity="info",
+                )
+                acm = ACMService(self.client_factory, region=config.region)
+                r53 = Route53Service(self.client_factory)
+                tags = [
+                    {"Key": "Name", "Value": f"{config.stack_name}-alb-cert"},
+                    {"Key": "Stack", "Value": config.stack_name},
+                    {"Key": "Tier", "Value": config.tier},
+                    {"Key": "ManagedBy", "Value": "GeuseMaker"},
+                ]
+                cert_arn = acm.request_dns_certificate(config.alb_domain_name, tags=tags)
+
+                console.print(
+                    f"{EMOJI['info']} Waiting for ACM DNS validation record to be generated...",
+                    verbosity="info",
+                )
+                rr_name, rr_type, rr_value = acm.wait_for_dns_validation_record(
+                    cert_arn,
+                    timeout_seconds=300,
+                    poll_interval_seconds=5.0,
+                )
+                change_id = r53.upsert_record(
+                    hosted_zone_id=config.alb_hosted_zone_id,
+                    name=rr_name,
+                    record_type=rr_type,
+                    value=rr_value,
+                    ttl=60,
+                )
+                if change_id:
+                    r53.wait_for_change(change_id)
+
+                console.print(
+                    f"{EMOJI['info']} Waiting for ACM certificate to be issued...",
+                    verbosity="info",
+                )
+                acm.wait_for_issued(cert_arn, timeout_seconds=900)
+
+                config = config.model_copy(update={"alb_certificate_arn": cert_arn})
+                console.print(
+                    f"{EMOJI['check']} ACM certificate issued: {cert_arn}",
+                    verbosity="info",
+                )
+            else:
+                # enable_https defaults to True, so configs written before HTTPS support
+                # must keep deploying. Fall back to an HTTP-only ALB instead of failing.
+                console.print(
+                    f"{EMOJI['warning']} HTTPS requested but no --alb-certificate-arn or "
+                    "(alb_domain_name + alb_hosted_zone_id) provided; deploying HTTP-only ALB. "
+                    "Provide a certificate ARN or a Route 53 domain to enable HTTPS.",
+                    verbosity="warning",
+                )
+                config = config.model_copy(update={"enable_https": False})
 
         if progress:
             try:

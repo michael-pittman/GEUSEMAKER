@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from moto import mock_aws
 
 from geusemaker.infra import AWSClientFactory
@@ -124,3 +125,20 @@ def test_delete_filesystem_succeeds() -> None:
 
     # Should complete without error
     svc.delete_filesystem(fs_id)
+
+
+def test_wait_for_mount_target_deleted_treats_mounttargetnotfound_as_success() -> None:
+    """Treat MountTargetNotFound from DescribeMountTargets as a successful deletion."""
+
+    class StubEFSClient:
+        def describe_mount_targets(self, MountTargetId=None, FileSystemId=None):  # noqa: ANN001,N803,ARG002
+            raise ClientError(
+                {"Error": {"Code": "MountTargetNotFound", "Message": "not found"}},
+                "DescribeMountTargets",
+            )
+
+    svc = EFSService(AWSClientFactory(), region="us-east-1")
+    svc._efs = StubEFSClient()  # type: ignore[attr-defined]
+
+    # Should not raise.
+    svc.wait_for_mount_target_deleted("fsmt-does-not-exist", max_attempts=1, delay=0)

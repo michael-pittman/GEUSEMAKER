@@ -611,10 +611,12 @@ class PreDeploymentValidator(BaseService):
             ),
         )
 
+        # Services bind to 127.0.0.1 on the instance; all HTTP traffic is proxied
+        # through host NGINX on port 80 (443 when HTTPS), so service ports like
+        # 5678 must NOT be required externally.
         required_ports = [
             (22, "SSH"),
             (80, "HTTP"),
-            (5678, "n8n"),
             (2049, "EFS"),
         ]
         ingress = sg.get("IpPermissions", [])
@@ -628,7 +630,7 @@ class PreDeploymentValidator(BaseService):
                 message="Required ingress ports are open."
                 if not missing_ports
                 else f"Missing ingress for: {', '.join(missing_ports)}",
-                remediation="Add ingress rules for SSH (22), HTTP (80), n8n (5678), and EFS (2049) or omit to auto-create.",
+                remediation="Add ingress rules for SSH (22), HTTP (80), and EFS (2049) or omit to auto-create.",
                 severity="error" if missing_ports else "info",
             ),
         )

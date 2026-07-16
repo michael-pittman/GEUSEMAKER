@@ -45,6 +45,18 @@ class UserDataConfig(BaseModel):
         default=True,
         description="Enable HTTPS/TLS for Tier 1 deployments with self-signed certificates.",
     )
+    n8n_external_host: str | None = Field(
+        default=None,
+        description="External host used by n8n for generating webhook URLs (e.g., n8n.example.com).",
+    )
+    n8n_external_protocol: Literal["http", "https"] | None = Field(
+        default=None,
+        description="External protocol used by n8n when n8n_external_host is set.",
+    )
+    n8n_proxy_hops: int | None = Field(
+        default=None,
+        description="Number of reverse proxies in front of n8n (sets N8N_PROXY_HOPS).",
+    )
     public_ip: str | None = Field(
         default=None,
         description="Public IP address for certificate CN (Tier 1 HTTPS only, auto-detected if not provided).",

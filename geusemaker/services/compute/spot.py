@@ -40,9 +40,18 @@ class SpotSelectionService(BaseService):
         self._ec2_client = ec2_client
         self._ec2_service = ec2_service
         self._ami_cache: dict[tuple[str, str, str], str] = {}  # Cache (os_type, ami_type, region) -> ami_id
+        self._az_name_cache: dict[str, dict[str, str]] = {}  # Cache region -> {zone_id: zone_name}
+        # Analysis cache avoids re-querying spot history/placement scores when callers
+        # (e.g. InstanceTypeSelector) analyze the same instance type repeatedly.
+        self._analysis_cache: dict[tuple[str, str], tuple[datetime, SpotAnalysis]] = {}
 
     def analyze_spot_prices(self, instance_type: str, region: str) -> SpotAnalysis:
-        """Return spot analysis including recommended AZ and stability."""
+        """Return spot analysis including recommended AZ and stability (cached briefly)."""
+        cache_key = (instance_type, region)
+        cached = self._analysis_cache.get(cache_key)
+        if cached and datetime.now(UTC) - cached[0] < self._capacity_ttl:
+            return cached[1]
+
         spot_prices = self._pricing_service.get_spot_prices(instance_type, region)
         on_demand = self._pricing_service.get_on_demand_price(instance_type, region)
 
@@ -71,7 +80,7 @@ class SpotSelectionService(BaseService):
             * 100,
         )
 
-        return SpotAnalysis(
+        analysis = SpotAnalysis(
             instance_type=instance_type,
             region=region,
             prices_by_az=prices_by_az,
@@ -82,6 +91,8 @@ class SpotSelectionService(BaseService):
             savings_percentage=savings_pct,
             placement_scores_by_az=placement_scores,
         )
+        self._analysis_cache[cache_key] = (datetime.now(UTC), analysis)
+        return analysis
 
     def _get_ami_for_dryrun(self, region: str, os_type: str = "amazon-linux-2023", ami_type: str = "base") -> str:
         """Get a valid AMI ID for dry-run checks (cached)."""
@@ -108,6 +119,18 @@ class SpotSelectionService(BaseService):
         # Fallback: use a placeholder AMI ID (less accurate but won't fail)
         return "ami-0c55b159cbfafe1f0"  # Generic Amazon Linux 2 AMI (always exists but may be deprecated)
 
+    # Error codes that genuinely indicate spot capacity/eligibility problems.
+    # Anything else (UnauthorizedOperation, missing default VPC, parameter issues)
+    # says nothing about capacity, so treating it as "no capacity" would silently
+    # force whole accounts onto on-demand.
+    _CAPACITY_ERROR_CODES = (
+        "InsufficientInstanceCapacity",
+        "SpotMaxPriceTooLow",
+        "MaxSpotInstanceCountExceeded",
+        "InstanceLimitExceeded",
+        "Unsupported",
+    )
+
     def check_spot_capacity(self, instance_type: str, az: str | None, region: str) -> bool:
         """Use a dry-run spot request to validate capacity with real AMI ID."""
         if not az:
@@ -133,12 +156,20 @@ class SpotSelectionService(BaseService):
                 MaxCount=1,
             )
         except ClientError as exc:  # type: ignore[catching-any]
-            if exc.response.get("Error", {}).get("Code") == "DryRunOperation":
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code == "DryRunOperation":
+                # Dry-run "failure" that means the request would have succeeded.
                 result = True
-            elif "InsufficientInstanceCapacity" in str(exc):
+            elif code in self._CAPACITY_ERROR_CODES or "InsufficientInstanceCapacity" in str(exc):
                 result = False
             else:
-                result = False
+                # Inconclusive (permissions, missing default VPC, ...): assume capacity
+                # and let launch-time fallback handle a genuine shortage.
+                console.print(
+                    f"{EMOJI['warning']} Spot capacity dry-run inconclusive in {az} ({code}); assuming capacity.",
+                    verbosity="debug",
+                )
+                result = True
         else:
             result = True
 
@@ -172,12 +203,20 @@ class SpotSelectionService(BaseService):
                 InstanceTypes=[instance_type],
                 TargetCapacity=target_capacity,
                 SingleAvailabilityZone=True,
+                # Without this the API scores every region, and cross-region AZ ids
+                # would pollute the result.
+                RegionNames=[region],
             )
 
             scores_by_az: dict[str, float] = {}
             for score_data in response.get("SpotPlacementScores", []):
-                # API returns either AvailabilityZoneId or AvailabilityZone
-                az = score_data.get("AvailabilityZone") or score_data.get("AvailabilityZoneId")
+                # The API returns AvailabilityZoneId (e.g. "use1-az1"); spot prices are
+                # keyed by AZ name (e.g. "us-east-1a"), so map ids to names or the
+                # scores never match and are silently ignored.
+                az = score_data.get("AvailabilityZone")
+                if not az:
+                    az_id = score_data.get("AvailabilityZoneId")
+                    az = self._az_id_to_name(region).get(az_id, az_id) if az_id else None
                 score = float(score_data.get("Score", 0.0))
 
                 if az and score > 0:
@@ -192,6 +231,25 @@ class SpotSelectionService(BaseService):
                 verbosity="debug",
             )
             return {}
+
+    def _az_id_to_name(self, region: str) -> dict[str, str]:
+        """Map AZ ids (use1-az1) to AZ names (us-east-1a) for the region (cached)."""
+        if self._az_name_cache.get(region) is None:
+            mapping: dict[str, str] = {}
+            try:
+                resp = self._ec2(region).describe_availability_zones()
+                for zone in resp.get("AvailabilityZones", []):
+                    zone_id = zone.get("ZoneId")
+                    zone_name = zone.get("ZoneName")
+                    if zone_id and zone_name:
+                        mapping[zone_id] = zone_name
+            except ClientError as exc:
+                console.print(
+                    f"{EMOJI['warning']} Could not map AZ ids to names: {exc}",
+                    verbosity="debug",
+                )
+            self._az_name_cache[region] = mapping
+        return self._az_name_cache[region]
 
     def select_instance_type(self, config: DeploymentConfig) -> InstanceSelection:
         """Select spot or on-demand placement honoring user preference."""

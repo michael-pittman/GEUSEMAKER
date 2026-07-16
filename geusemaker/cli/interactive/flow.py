@@ -19,6 +19,7 @@ from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig
 from geusemaker.models.discovery import (
     EFSInfo,
+    HostedZoneInfo,
     KeyPairInfo,
     SecurityGroupInfo,
     SubnetInfo,
@@ -29,6 +30,7 @@ from geusemaker.services.discovery import (
     DiscoveryCache,
     EFSDiscoveryService,
     KeyPairDiscoveryService,
+    Route53DiscoveryService,
     SecurityGroupDiscoveryService,
     VPCDiscoveryService,
 )
@@ -100,6 +102,9 @@ class DiscoveryFacade:
     def list_file_systems(self) -> list[EFSInfo]:
         return self._safe(self._efs_service.list_file_systems)
 
+    def list_hosted_zones(self) -> list[HostedZoneInfo]:
+        return self._safe(self._r53_service.list_hosted_zones)
+
     def validate_efs_for_subnets(self, efs_id: str, subnet_ids: list[str]) -> bool:
         """Check if EFS has mount targets in all required subnets."""
         try:
@@ -113,6 +118,7 @@ class DiscoveryFacade:
         self._sg_service = SecurityGroupDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
         self._kp_service = KeyPairDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
         self._efs_service = EFSDiscoveryService(self._client_factory, region=self._region, cache=self._cache)
+        self._r53_service = Route53DiscoveryService(self._client_factory)
 
     def _safe(self, fn):
         try:
@@ -153,6 +159,7 @@ class InteractiveFlow:
             self._step_stack_name,
             self._step_region,
             self._step_tier,
+            self._step_https,
             self._step_compute_type,
             self._step_spot,
             self._step_instance_type,
@@ -234,6 +241,72 @@ class InteractiveFlow:
         if self._resumed_session and not self._force_prompt and self.state.get("tier"):
             return
         self.state["tier"] = self.prompts.tier(default=self.state.get("tier"))
+
+    def _step_https(self) -> None:
+        """Configure HTTPS inputs needed for Tier 2/3 ALB deployments."""
+        # Only prompt when tier implies ALB and user wants HTTPS.
+        if self._resumed_session and not self._force_prompt and "enable_https" in self.state:
+            return
+
+        tier = self.state.get("tier", "dev")
+        # Default: dev supports self-signed; tiers 2/3 expect ACM.
+        enable_https = self.dialogs.confirm(
+            "Enable HTTPS?",
+            default=True,
+            help_text="Tier 1 uses a self-signed cert. Tier 2/3 use an ACM certificate on the ALB.",
+        )
+        self.state["enable_https"] = enable_https
+
+        if not enable_https:
+            # Clear any prior values (resume/back).
+            self.state["alb_domain_name"] = None
+            self.state["alb_hosted_zone_id"] = None
+            return
+
+        # Tier 1: keep existing self-signed default.
+        if tier == "dev":
+            self.state["tier1_use_self_signed"] = self.dialogs.confirm(
+                "Tier 1: Use self-signed certificate (NGINX)?",
+                default=True,
+                help_text="Recommended for dev. For trusted certs, use Tier 2/3 with a real domain + ACM.",
+            )
+            self.state["alb_domain_name"] = None
+            self.state["alb_hosted_zone_id"] = None
+            return
+
+        # Tier 2/3: require Route 53 hosted zone + domain so we can request/validate ACM during deploy.
+        with spinner("Discovering Route 53 hosted zones"):
+            zones = self._discovery.list_hosted_zones()
+
+        public_zones = [z for z in zones if not z.private_zone]
+        if not public_zones:
+            messages.warning(
+                "No public Route 53 hosted zones found. "
+                "To use Tier 2 HTTPS you must have a public hosted zone in Route 53."
+            )
+            raise DialogBack()
+
+        options = [f"{z.name} ({z.hosted_zone_id})" for z in public_zones]
+        choice = self.prompts.choose_from_list(
+            "Select Route 53 hosted zone for ACM validation",
+            options,
+            default_index=0,
+            allow_create_new=False,
+        )
+        selected = public_zones[choice]
+        self.state["alb_hosted_zone_id"] = selected.hosted_zone_id
+
+        default_domain = f"{self.state.get('stack_name', 'geusemaker')}.{selected.name}"
+        fqdn = self.dialogs.prompt_text(
+            "DNS name for n8n (FQDN):",
+            default=default_domain,
+            validator=lambda value: value.endswith(f".{selected.name}") or value == selected.name,
+            help_text=f"Must be within the selected zone: {selected.name}",
+        ).rstrip(".")
+        self.state["alb_domain_name"] = fqdn
+
+        # Always redirect to HTTPS at the ALB for Tier 2/3.
+        self.state["force_https_redirect"] = True
 
     def _step_compute_type(self) -> None:
         if self._resumed_session and not self._force_prompt and self.state.get("compute_type"):
@@ -508,6 +581,12 @@ class InteractiveFlow:
             architecture=self.state.get("architecture", "x86_64").lower(),
             ami_type=self.state.get("ami_type", "base").lower(),
             ami_id=self.state.get("ami_id"),
+            # Feature flags (Tier 2/3 enable ALB/CDN in DeploymentRunner normalization too)
+            enable_https=self.state.get("enable_https", True),
+            tier1_use_self_signed=self.state.get("tier1_use_self_signed", True),
+            force_https_redirect=self.state.get("force_https_redirect", True),
+            alb_domain_name=self.state.get("alb_domain_name"),
+            alb_hosted_zone_id=self.state.get("alb_hosted_zone_id"),
             vpc_id=self.state.get("vpc_id"),
             subnet_id=self.state.get("subnet_id"),
             attach_internet_gateway=self.state.get("attach_internet_gateway", False),

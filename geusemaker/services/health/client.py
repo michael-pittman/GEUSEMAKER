@@ -15,7 +15,9 @@ class HealthCheckClient:
     """Performs health checks against service endpoints."""
 
     def __init__(self, client: httpx.AsyncClient | None = None):
-        self._client = client or httpx.AsyncClient(follow_redirects=True)
+        # verify=False: Tier 1 NGINX redirects port 80 to HTTPS with a self-signed
+        # cert; these probes only report reachability, not sensitive data.
+        self._client = client or httpx.AsyncClient(follow_redirects=True, verify=False)  # noqa: S501
 
     async def check_http(
         self,
