@@ -1,0 +1,22 @@
+$surface: #0a0c0f;
+$panel: #12151a;
+$ink: #e8ecef;
+$muted: #6b7280;
+$signal: #c8f542;
+$warn: #f5a524;
+$fault: #ff4d4d;
+$rule: #2a3038;
+
+Screen { background: $surface; color: $ink; }
+Header { dock: top; background: $panel; color: $signal; text-style: bold; }
+Footer { dock: bottom; background: $panel; color: $ink; }
+#workspace { height: 1fr; }
+#sidebar { width: 24; background: $panel; border-right: heavy $rule; }
+#mark { height: 5; padding: 1; color: $signal; text-style: bold; border-bottom: heavy $signal; }
+#nav { background: $panel; border: none; }
+ListItem { height: 3; padding: 1; color: $ink; }
+ListItem:focus, ListItem.--highlight { background: $signal; color: $surface; text-style: bold; }
+#body { width: 1fr; padding: 1 2; }
+#mode-title { height: 3; padding: 1; border: heavy $signal; color: $signal; text-style: bold; }
+#summary { height: 5; padding: 1; border: heavy $rule; color: $ink; }
+#event-log { height: 1fr; border: heavy $rule; background: $panel; color: $ink; padding: 1; }

@@ -166,22 +166,25 @@ def test_interactive_flow_collects_config(monkeypatch, tmp_path):
     dialog_sequence = [
         "demo",  # stack name
         "1",  # region
+        "2",  # advanced setup
         "",  # tier default
         "",  # enable_https default yes
         "",  # tier1 self-signed default yes
         "",  # compute_type default (cpu)
+        "",  # instance recommendation policy default (balanced)
         "",  # use spot default yes
+        "",  # accept instance recommendation
         "",  # os_type default (ubuntu-22.04)
         "",  # architecture default (x86_64)
         "",  # ami_type default (base)
         "n",  # custom ami_id: no
+        "",  # accept costs
         "2",  # choose existing vpc (option 2 after "Create new")
         "1",  # compute subnet
         "1",  # storage subnet
         "2",  # security group existing
         "2",  # EFS filesystem existing (option 2 after "Create new")
         "2",  # key pair existing
-        "",  # accept costs
         "",  # confirm deploy
     ]
     dialogs = Dialogs(input_provider=scripted_inputs(dialog_sequence))
@@ -212,19 +215,22 @@ def test_interactive_flow_efs_with_new_vpc(monkeypatch, tmp_path):
     dialog_sequence = [
         "demo-new-vpc",  # stack name
         "1",  # region
+        "2",  # advanced setup
         "",  # tier default
         "",  # enable_https default yes
         "",  # tier1 self-signed default yes
         "",  # compute_type default (cpu)
+        "",  # instance recommendation policy default (balanced)
         "",  # use spot default yes
+        "",  # accept instance recommendation
         "",  # os_type default (ubuntu-22.04)
         "",  # architecture default (x86_64)
         "",  # ami_type default (base)
         "n",  # custom ami_id: no
+        "",  # accept costs
         "1",  # choose "Create new" VPC
         "2",  # EFS filesystem existing (option 2 after "Create new")
         "2",  # key pair existing
-        "",  # accept costs
         "",  # confirm deploy
     ]
     dialogs = Dialogs(input_provider=scripted_inputs(dialog_sequence))
@@ -254,3 +260,35 @@ def test_session_store_round_trip(tmp_path):
     assert loaded == {"stack_name": "demo"}
     store.clear()
     assert store.load() is None
+
+
+def test_quick_setup_skips_ami_and_resource_discovery(monkeypatch, tmp_path):
+    dialog_sequence = [
+        "quick-demo",
+        "1",
+        "1",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ]
+    dialogs = Dialogs(input_provider=scripted_inputs(dialog_sequence))
+    flow = InteractiveFlow(
+        dialogs=dialogs,
+        session_store=InteractiveSessionStore(base_path=tmp_path),
+        initial_state={"region": "us-east-1"},
+    )
+    discovery = FakeDiscovery()
+    monkeypatch.setattr(discovery, "list_vpcs", lambda: (_ for _ in ()).throw(AssertionError("unexpected discovery")))
+    flow._discovery = discovery
+    flow._cost_estimator = FakeEstimator()
+
+    config = flow.run()
+
+    assert flow.state["setup_mode"] == "quick"
+    assert config.os_type == "ubuntu-22.04"
+    assert config.vpc_id is None
+    assert config.efs_id is None

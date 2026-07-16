@@ -50,3 +50,11 @@ def test_region_labels_are_geographic() -> None:
     labels = dict(REGION_CHOICES)
     assert labels["us-east-1"] == "US East (N. Virginia)"
     assert "close to US/EU users" not in " ".join(labels.values())
+
+
+def test_setup_mode_defaults_to_quick() -> None:
+    assert _prompts("").setup_mode() == "quick"
+
+
+def test_setup_mode_can_select_advanced() -> None:
+    assert _prompts("2").setup_mode() == "advanced"

@@ -48,6 +48,19 @@ class InteractivePrompts:
             allow_back=False,
         )
 
+    def setup_mode(self, default: str | None = None) -> str:
+        modes = ["quick", "advanced"]
+        choice = self.dialogs.select(
+            "Choose setup mode",
+            options=[
+                "Quick setup — recommended defaults and isolated resources",
+                "Advanced setup — customize AMI, networking, storage, and SSH access",
+            ],
+            default_index=modes.index(default) if default in modes else 0,
+            help_text="Quick setup minimizes decisions. Advanced setup can reuse account resources.",
+        )
+        return modes[choice]
+
     def stack_name(self, default: str | None = None) -> str:
         return self.dialogs.prompt_text(
             "Stack name:",
@@ -80,9 +93,9 @@ class InteractivePrompts:
 
     def tier(self, default: str | None = None) -> str:
         tiers = [
-            "dev – Tier 1: single instance, self-signed HTTPS (development/testing)",
-            "automation – Tier 2: ALB + ACM HTTPS (production automation on CPU)",
-            "gpu – Tier 3: GPU instance, ALB + CloudFront CDN (AI model inference)",
+            "dev – Tier 1: single-instance development topology",
+            "automation – Tier 2: production topology with ALB + ACM HTTPS",
+            "gpu – Tier 3: global topology with ALB + CloudFront CDN",
         ]
         tier_keys = ["dev", "automation", "gpu"]
         default_idx = tier_keys.index(default) if default in tier_keys else 0
@@ -90,7 +103,8 @@ class InteractivePrompts:
             "Select deployment tier",
             options=tiers,
             default_index=default_idx,
-            help_text="All tiers are available. Tier 2/3 provision HTTPS via ACM (requires a Route 53 domain).",
+            help_text="Tier controls topology; workload and instance policy are selected separately. "
+            "Tier 2/3 HTTPS requires a Route 53 domain.",
         )
         return tier_keys[choice]
 
@@ -109,6 +123,24 @@ class InteractivePrompts:
             help_text="CPU is suitable for most automation workflows. GPU is recommended for running AI models.",
         )
         return compute_choices[choice][0]
+
+    def instance_preference(self, default: str | None = None) -> str:
+        """Choose how eligible instance candidates should be ranked."""
+        choices = [
+            ("balanced", "Balance purchase mode, price, and capacity signal"),
+            ("lowest_cost", "Prefer the lowest evaluated hourly price"),
+            ("highest_availability", "Prefer the strongest placement/capacity signal"),
+            ("performance", "Prefer higher-capacity candidates"),
+        ]
+        labels = [f"{key.replace('_', ' ').title()} — {description}" for key, description in choices]
+        default_idx = next((i for i, (key, _) in enumerate(choices) if key == default), 0)
+        choice = self.dialogs.select(
+            "Choose instance recommendation policy",
+            options=labels,
+            default_index=default_idx,
+            help_text="GeuseMaker evaluates all eligible candidates and shows ranked alternatives.",
+        )
+        return choices[choice][0]
 
     def use_spot(self, default: bool = True) -> bool:
         return self.dialogs.confirm(
@@ -134,6 +166,13 @@ class InteractivePrompts:
             help_text="CPU instances work for most workflows. GPU instances recommended for AI model inference.",
         )
         return INSTANCE_CHOICES[choice][0]
+
+    def accept_recommendation(self, instance_type: str, reason: str | None = None) -> bool:
+        return self.dialogs.confirm(
+            f"Use recommended instance {instance_type}?",
+            default=True,
+            help_text=reason or "Choose no to select an instance type manually.",
+        )
 
     def os_type(self, default: str | None = None) -> str:
         os_choices = [

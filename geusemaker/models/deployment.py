@@ -26,6 +26,17 @@ class DeploymentConfig(BaseModel):
         description="Identifier for the deployment; used for tagging and state files.",
     )
     tier: Literal["dev", "automation", "gpu"]
+    workload: Literal["cpu", "gpu"] | None = Field(
+        default=None,
+        description=(
+            "Compute workload, independent of deployment topology. When omitted, legacy "
+            "GPU-tier configurations imply GPU and all other tiers imply CPU."
+        ),
+    )
+    instance_preference: Literal["balanced", "lowest_cost", "highest_availability", "performance"] = Field(
+        default="balanced",
+        description="Policy used to rank eligible instance recommendations.",
+    )
     region: str = Field(
         default="us-east-1",
         pattern=r"^[a-z]{2}-[a-z]+-\d$",
@@ -122,6 +133,16 @@ class DeploymentConfig(BaseModel):
     # Rollback settings
     auto_rollback_on_failure: bool = Field(default=True)
     rollback_timeout_minutes: int = Field(default=15, ge=5, le=60)
+
+    @property
+    def effective_workload(self) -> Literal["cpu", "gpu"]:
+        """Return explicit workload or the backward-compatible legacy inference."""
+        return self.workload or ("gpu" if self.tier == "gpu" else "cpu")
+
+    @property
+    def topology(self) -> Literal["development", "production", "global"]:
+        """Expose a topology name without changing persisted legacy tier identifiers."""
+        return {"dev": "development", "automation": "production", "gpu": "global"}[self.tier]
 
 
 class RollbackRecord(BaseModel):

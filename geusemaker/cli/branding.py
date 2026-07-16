@@ -9,29 +9,44 @@ MAIN_BANNER = r"""
 """
 
 DEPLOY_BANNER = """
-[bold cyan]
+[bold #c8f542]
      ██████╗ ███████╗██╗   ██╗███████╗███████╗
     ██╔════╝ ██╔════╝██║   ██║██╔════╝██╔════╝
     ██║  ███╗█████╗  ██║   ██║███████╗█████╗
     ██║   ██║██╔══╝  ██║   ██║╚════██║██╔══╝
     ╚██████╔╝███████╗╚██████╔╝███████║███████╗
-     ╚═════╝ ╚══════╝ ╚═════╝ ╚══════╝╚══════╝[/bold cyan]
-    [bold magenta]    ███╗   ███╗ █████╗ ██╗  ██╗███████╗██████╗
+     ╚═════╝ ╚══════╝ ╚═════╝ ╚══════╝╚══════╝[/bold #c8f542]
+    [bold #e8ecef]    ███╗   ███╗ █████╗ ██╗  ██╗███████╗██████╗
     ████╗ ████║██╔══██╗██║ ██╔╝██╔════╝██╔══██╗
     ██╔████╔██║███████║█████╔╝ █████╗  ██████╔╝
     ██║╚██╔╝██║██╔══██║██╔═██╗ ██╔══╝  ██╔══██╗
     ██║ ╚═╝ ██║██║  ██║██║  ██╗███████╗██║  ██║
-    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝[/bold magenta]
+    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝[/bold #e8ecef]
 
     [dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
-    [bold yellow]⚡ AI Infrastructure Deployment[/bold yellow]
+    [bold #f5a524]⚡ AI Infrastructure Deployment[/bold #f5a524]
 
-    [green]▸[/green] n8n Workflows    [green]▸[/green] Ollama LLM    [green]▸[/green] Qdrant DB
-    [green]▸[/green] Spot Instances   [green]▸[/green] EFS Storage   [green]▸[/green] CloudFront
+    [#c8f542]▸[/#c8f542] n8n Workflows    [#c8f542]▸[/#c8f542] Ollama LLM    [#c8f542]▸[/#c8f542] Qdrant DB
+    [#c8f542]▸[/#c8f542] Spot Instances   [#c8f542]▸[/#c8f542] EFS Storage   [#c8f542]▸[/#c8f542] CloudFront
     [dim]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/dim]
 """
 
 COMPACT_BANNER = "GeuseMaker — AI infrastructure on AWS"
+
+STAGE_GLYPHS: dict[str, str] = {
+    "validate": "┌☑─┐\n│☑☐│\n└──┘",
+    "vpc": "┌◇─┐\n◇──◇\n└─◇┘",
+    "sg": "┌╦╦┐\n│■■│\n└╩╩┘",
+    "efs": "┌──┐\n│≡≡│\n└──┘",
+    "iam": "┌○─┐\n│└─┤\n└──┘",
+    "ec2": "┌▓▓┐\n│██│\n└▓▓┘",
+    "spot": "┌──┐\n│ϟ │\n└──┘",
+    "userdata": "┌≡─┐\n│≡≡│\n└─≡┘",
+    "alb": "┌→→┐\n│══│\n└→→┘",
+    "cdn": "┌○─┐\n│┼─│\n└─○┘",
+    "health": "┌──┐\n│╱╲│\n└──┘",
+    "finalize": "┌★★┐\n│OK│\n└──┘",
+}
 
 EMOJI = {
     "rocket": "🚀",
@@ -46,4 +61,4 @@ EMOJI = {
     "log": "📋",
 }
 
-__all__ = ["MAIN_BANNER", "DEPLOY_BANNER", "COMPACT_BANNER", "EMOJI"]
+__all__ = ["MAIN_BANNER", "DEPLOY_BANNER", "COMPACT_BANNER", "EMOJI", "STAGE_GLYPHS"]

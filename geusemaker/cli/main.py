@@ -24,6 +24,7 @@ from geusemaker.cli.commands.report import report
 from geusemaker.cli.commands.restore import restore
 from geusemaker.cli.commands.rollback import rollback
 from geusemaker.cli.commands.status import status
+from geusemaker.cli.commands.tui import tui_command
 from geusemaker.cli.commands.update import update
 from geusemaker.cli.commands.validate import validate
 from geusemaker.cli.output import set_machine_output
@@ -98,6 +99,7 @@ cli.add_command(backup_group)
 cli.add_command(restore)
 cli.add_command(info)
 cli.add_command(init)
+cli.add_command(tui_command)
 
 
 __all__ = ["cli"]

@@ -29,6 +29,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 3. Install GeuseMaker
 pip install -e ".[dev]"
 
+# Optional full-screen operations hub
+pip install -e ".[dev,tui]"
+
 # 4. Verify installation
 geusemaker --help
 ```
@@ -42,10 +45,10 @@ geusemaker deploy
 # The wizard will guide you through:
 # 1. Stack naming
 # 2. Region selection
-# 3. Tier choice (1=dev, 2=automation, 3=gpu)
-# 4. Instance type and spot preferences
-# 5. Network configuration (VPC/subnet/security group)
-# 6. Cost preview
+# 3. Quick or advanced setup
+# 4. Topology tier and CPU/GPU workload
+# 5. Balanced, lowest-cost, availability, or performance preference
+# 6. Cost preview and optional infrastructure customization
 # 7. Resource confirmation
 ```
 
@@ -59,6 +62,21 @@ geusemaker deploy
 - **Security**: Auto-generated encryption key for n8n credential storage
 
 ## Deployment Modes
+
+### Optional full-screen TUI
+
+The default wizard remains scrollback-friendly and suitable for ordinary installs. The
+Textual operations hub is an optional extra with deploy, monitor, and inspect workspaces:
+
+```bash
+geusemaker tui
+geusemaker deploy --tui
+geusemaker monitor start my-ai-stack --tui
+geusemaker tui --screen monitor --stack-name my-ai-stack
+```
+
+Set `GEUSEMAKER_UI=tui` to route deploy or monitor commands to the TUI. The TUI is
+presentation-only; automation continues to use the existing CLI and JSON/YAML output.
 
 ### 1. Interactive Mode (Default)
 

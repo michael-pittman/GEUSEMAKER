@@ -15,7 +15,8 @@
 | **Language** | Python | 3.12+ | Primary development language | Latest stable, pattern matching, performance improvements |
 | **AWS SDK** | Boto3 | 1.35+ | AWS API integration | Native AWS support, comprehensive service coverage |
 | **CLI Framework** | Click | 8.1+ | Command-line interface | Decorator-based, groups, lazy loading, excellent DX |
-| **Terminal UI** | Rich | 13.9+ | Interactive output, progress, tables | Best-in-class terminal UX, spinners, live displays |
+| **Wizard UI** | Rich + Questionary | Rich 14.2–15.x; Questionary 2.1+ | Default guided, scrollback-friendly shell | Available in the base install; preserves CI and machine-output behavior |
+| **Full-screen TUI** | Textual | 8.2–8.x (optional `[tui]`) | Opt-in deploy, monitor, and inspect hub | Shares domain services and progress events without adding Textual to the base install |
 | **Validation** | Pydantic | 2.9+ | Config validation, settings | V2 performance, ConfigDict, Field validators |
 | **HTTP Client** | httpx | 0.27+ | Health checks, API calls | Async support, modern API, type hints |
 | **Testing** | pytest | 8.3+ | Unit and integration tests | Industry standard, fixtures, parameterization |
