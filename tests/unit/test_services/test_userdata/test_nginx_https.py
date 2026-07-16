@@ -211,7 +211,8 @@ def test_userdata_nginx_service_startup() -> None:
     # Verify NGINX service management
     assert "Starting NGINX service" in script
     assert "systemctl enable nginx" in script
-    assert "systemctl start nginx" in script
+    # restart (not start): the package may auto-start NGINX with its stock config
+    assert "systemctl restart nginx" in script
 
     # Verify service status check
     assert "systemctl is-active" in script

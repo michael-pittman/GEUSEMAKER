@@ -40,7 +40,17 @@ else
             echo "WARNING: Cannot generate N8N_ENCRYPTION_KEY automatically. n8n credentials will not be encrypted."
             n8n_encryption_key=""
         fi
-        
+
+        # Crawl4AI >= 0.9 restricts itself to an in-container loopback session when
+        # no API token is configured, resetting connections from the host (NGINX
+        # gets 502). Generate a token so the service accepts proxied requests.
+        local crawl4ai_api_token=""
+        if command -v openssl >/dev/null 2>&1; then
+            crawl4ai_api_token=$(openssl rand -hex 16)
+        elif [ -c /dev/urandom ]; then
+            crawl4ai_api_token=$(head -c 16 /dev/urandom | od -A n -t x1 | tr -d ' \n' | head -c 32)
+        fi
+
         # Write runtime.env file with all environment variables
         {
             echo "N8N_PORT={{ n8n_port }}"
@@ -49,6 +59,7 @@ else
             echo "CRAWL4AI_PORT={{ crawl4ai_port }}"
             echo "POSTGRES_PASSWORD={{ postgres_password }}"
             echo "N8N_ENCRYPTION_KEY=${n8n_encryption_key}"
+            echo "CRAWL4AI_API_TOKEN=${crawl4ai_api_token}"
             echo "N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}"
             echo "DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}"
             echo "NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}"
@@ -167,7 +178,8 @@ services:
               capabilities: [gpu]
 {% endif %}
     healthcheck:
-      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11434/api/tags >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11434/api/tags >/dev/null; else exit 1; fi"]
+      # Ollama image ships without curl/wget; use bash TCP port check
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/11434' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -66,7 +66,8 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "if command -v curl >/dev/null 2>&1; then curl -fsS http://localhost:11434/api/tags >/dev/null; elif command -v wget >/dev/null 2>&1; then wget -q -O- http://localhost:11434/api/tags >/dev/null; else exit 1; fi"]
+      # Ollama image ships without curl/wget; use bash TCP port check
+      test: ["CMD-SHELL", "bash -c ': > /dev/tcp/127.0.0.1/11434' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

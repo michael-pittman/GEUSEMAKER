@@ -10,11 +10,15 @@ NGINX_GUARD="/var/lib/geusemaker/nginx-configured"
 if [ -f "$NGINX_GUARD" ]; then
     echo "NGINX already configured, skipping"
 else
-    echo "Installing NGINX web server..."
-    if [ "$OS_FAMILY" = "debian" ]; then
-        pkg_install nginx
-    else
-        yum install -y nginx
+    # NGINX is pre-installed in the core dependency batch on Debian/Ubuntu;
+    # install here only when missing (Amazon Linux, or unexpected state).
+    if ! command -v nginx >/dev/null 2>&1; then
+        echo "Installing NGINX web server..."
+        if [ "$OS_FAMILY" = "debian" ]; then
+            pkg_install nginx
+        else
+            yum install -y nginx
+        fi
     fi
 
     if ! command -v nginx >/dev/null 2>&1; then
@@ -35,7 +39,10 @@ else
     echo "Starting NGINX service..."
     if command -v systemctl >/dev/null 2>&1; then
         systemctl enable nginx
-        systemctl start nginx
+        # restart (not start): the package may have auto-started NGINX with its
+        # stock default site before our config/default-site removal; a plain
+        # start would be a no-op and keep serving the stale configuration.
+        systemctl restart nginx
 
         if ! systemctl is-active --quiet nginx; then
             echo "ERROR: NGINX failed to start"
@@ -43,8 +50,14 @@ else
             exit 1
         fi
     else
-        service nginx start
+        service nginx restart || service nginx start
         chkconfig nginx on 2>/dev/null || true
+    fi
+
+    # Package installs are done: let background security updates resume
+    # (stopped at the top of base.sh to keep the dpkg lock free).
+    if [ "$OS_FAMILY" = "debian" ]; then
+        systemctl start unattended-upgrades 2>/dev/null || true
     fi
 
 {% if enable_https and tier == "dev" %}

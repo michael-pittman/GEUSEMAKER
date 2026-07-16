@@ -102,6 +102,11 @@ echo "Detected OS family: $OS_FAMILY"
 # Debian/Ubuntu: set noninteractive frontend and add dpkg/apt lock retry helper
 if [ "$OS_FAMILY" = "debian" ]; then
     export DEBIAN_FRONTEND=noninteractive
+    # unattended-upgrades can hold the dpkg lock for many minutes right after boot,
+    # starving later installs (observed: NGINX install failing after 5 minutes of
+    # lock retries). Stop it during bootstrap; the service stays enabled and is
+    # started again at the end of nginx-setup (and on any reboot).
+    systemctl stop unattended-upgrades 2>/dev/null || true
 fi
 
 with_dpkg_lock_retry() {
@@ -289,7 +294,9 @@ if [ "$OS_FAMILY" = "debian" ]; then
     elif apt-cache show libfuse2t64 >/dev/null 2>&1; then
         fuse_pkg="libfuse2t64"
     fi
-    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 fuse ${fuse_pkg:+$fuse_pkg}
+    # nginx is installed up-front (configured/started later in nginx-setup) so a
+    # late apt transaction can't be starved by background apt activity.
+    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 fuse nginx ${fuse_pkg:+$fuse_pkg}
 else
     # Amazon Linux: Replace curl-minimal with full curl (AL2023 ships with curl-minimal)
     # Use --allowerasing to allow yum to replace curl-minimal with curl
