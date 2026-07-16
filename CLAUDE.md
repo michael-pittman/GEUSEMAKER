@@ -29,6 +29,8 @@ pytest --cov=geusemaker --cov-report=term-missing           # With coverage
 ```bash
 # Deployment lifecycle
 geusemaker deploy [--config deployment.yaml] [--skip-validation]
+geusemaker deploy [--workload cpu|gpu] [--instance-preference balanced|lowest_cost|highest_availability|performance]
+geusemaker deploy --tui              # Requires the optional [tui] extra
 geusemaker destroy [--preserve-efs]
 geusemaker update | rollback
 
@@ -36,6 +38,7 @@ geusemaker update | rollback
 geusemaker status <stack> [--output json]
 geusemaker logs <stack> [--follow] [--service <name>]
 geusemaker health | monitor | inspect
+geusemaker tui                       # Optional full-screen operations hub
 
 # Management
 geusemaker list [--discover-from-aws]  # State recovery from AWS
@@ -52,6 +55,8 @@ geusemaker cleanup | backup | restore | init | info
 - `cli/display/` - Output formatters (cost, discovery, health, listing, monitor, pricing, validation)
 - `cli/interactive/` - Interactive wizard flows and prompts
 - `cli/output/` - Verbosity control (`VerbosityConsole`)
+- `cli/tui/` - Optional, lazy-loaded Textual shell
+- `cli/progress_events.py` - UI-neutral progress event contract
 - `cli/branding.py` - Banners (`MAIN_BANNER`, `DEPLOY_BANNER`) and `EMOJI` dict
 
 ## MCP Tools
@@ -65,7 +70,8 @@ geusemaker cleanup | backup | restore | init | info
 |----------|------------|---------|
 | Language | Python 3.12+ | Primary development |
 | AWS SDK | Boto3 1.35+ | AWS API integration |
-| CLI | Click 8.1+ / Rich 13.9+ / questionary 2.0+ | Interface |
+| CLI | Click 8.1+ / Rich 14.2–15.x / questionary 2.1+ | Default interface |
+| Optional TUI | Textual 8.x | Full-screen operations shell |
 | Validation | Pydantic 2.9+ | Config/state models |
 | HTTP | httpx 0.27+ | Health checks, async HTTP |
 | Locking | filelock 3.14+ | State file locking |
@@ -78,7 +84,7 @@ geusemaker cleanup | backup | restore | init | info
 ```
 geusemaker/
 ├── geusemaker/           # Main Python package
-│   ├── cli/              # Click CLI + Rich UI (commands/, components/, display/, interactive/, output/)
+│   ├── cli/              # Click/Rich CLI plus optional Textual TUI
 │   ├── orchestration/    # Deployment workflows (tier1, tier2, tier3, errors)
 │   ├── services/         # AWS resource managers (30+ services across subdirectories)
 │   ├── models/           # Pydantic models (70+ models, barrel-exported)
@@ -99,7 +105,7 @@ geusemaker/
 4. **NEVER store secrets in state files** - Plain JSON only
 5. **ALWAYS use Pydantic models** - No raw dicts
 6. **ALWAYS validate inputs** - CLI args, user prompts, file reads
-7. **ALWAYS include emojis** - Use `EMOJI` dict from branding.py
+7. **Use semantic UI tokens** - Use branding/stage assets and the shared brutalist theme; do not rely on emoji alone
 8. **ALWAYS tag AWS resources** - `Stack: {stack_name}` on all
 9. **Use async for polling/monitoring** - Wrap blocking AWS calls with `asyncio.to_thread()` in monitoring, validation, and backup services
 10. **EFS is MANDATORY** - Every deployment needs EFS for persistence
@@ -115,10 +121,12 @@ geusemaker/
 
 - **Layered Monolith**: CLI → Orchestration → Services → Infrastructure
 - **EFS Always Required**: All deployments use EFS for persistent storage (n8n workflows, Ollama models, Qdrant indexes, PostgreSQL data)
-- **Three Deployment Tiers**:
-  - Tier 1 (Dev): CPU spot instances, direct public IP, self-signed HTTPS
-  - Tier 2 (Automation): CPU with ALB, ACM certificates, HTTPS
-  - Tier 3 (GPU): GPU instances with ALB + CloudFront CDN
+- **Topology and workload are independent**:
+  - Tier 1 (`dev`): single-instance topology and self-signed HTTPS option
+  - Tier 2 (`automation`): ALB + ACM production topology
+  - Tier 3 (`gpu`, legacy name): ALB + CloudFront global topology
+  - `workload`: `cpu` or `gpu`; legacy configs without it infer GPU only for the `gpu` tier
+- **Recommendation policy**: `balanced`, `lowest_cost`, `highest_availability`, or `performance`
 
 ## Orchestration Workflow
 
@@ -382,8 +390,11 @@ def test_service_method() -> None:
 
 ## Key Documents
 
-- **PRD**: `docs/prd.md` (sharded in `docs/prd/`)
-- **Architecture**: `docs/architecture.md` (sharded in `docs/architecture/`)
+- **Documentation index**: `docs/README.md`
+- **PRD**: `docs/prd/index.md` (canonical; `docs/PRD.md` is historical)
+- **Architecture**: `docs/architecture/index.md` (canonical; `docs/architecture.md` is historical)
+- **Instance recommendations**: `docs/instance-recommendation.md`
+- **TUI rollout**: `docs/tui-brutalist-rollout.md`
 - **Stories**: `docs/stories/` - Implementation stories
 - **Epics**: `docs/epics/` - Feature epics
 

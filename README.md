@@ -634,14 +634,13 @@ pytest --cov=geusemaker --cov-report=term-missing
 GeuseMaker uses a **layered monolith** architecture:
 
 ```
-CLI → Orchestration → Services → Infrastructure
- ↓         ↓             ↓            ↓
-Click   Tier1/2/3    EC2/EFS/VPC   Boto3
-Rich    Workflow     IAM/ALB       State
+CLI / optional TUI → Orchestration → Services → Infrastructure
+         ↓                 ↓            ↓           ↓
+ Click/Rich/Textual     Tier1/2/3    AWS/domain   Boto3/state
 ```
 
 **Key components:**
-- **CLI Layer**: Click commands, Rich UI, questionary prompts
+- **CLI Layer**: Click commands, Rich wizard, questionary prompts, optional Textual TUI
 - **Orchestration**: Deployment workflows (Tier 1, 2, 3)
 - **Services**: AWS resource managers (EC2, EFS, VPC, IAM, ALB, etc.)
 - **Infrastructure**: Boto3 clients, state persistence, error handling
@@ -656,11 +655,12 @@ Rich    Workflow     IAM/ALB       State
 
 ## Documentation
 
-- **Project Guide**: [CLAUDE.md](CLAUDE.md) - Comprehensive coding patterns and architecture
-- **PRD**: [docs/PRD.md](docs/PRD.md) - Product requirements
-- **Architecture**: [docs/architecture.md](docs/architecture.md) - System design
-- **Stories**: [docs/stories/](docs/stories/) - Implementation details
-- **Epics**: [docs/epics/](docs/epics/) - Feature epics
+- **Documentation index**: [docs/README.md](docs/README.md)
+- **Project Guide**: [CLAUDE.md](CLAUDE.md) — coding patterns and repository conventions
+- **PRD**: [docs/prd/index.md](docs/prd/index.md) — canonical product requirements
+- **Architecture**: [docs/architecture/index.md](docs/architecture/index.md) — canonical system design
+- **Stories**: [docs/stories/](docs/stories/) — implementation records
+- **Epics**: [docs/epics/](docs/epics/) — feature delivery records
 
 ## License
 
@@ -668,5 +668,6 @@ MIT License - see [LICENSE](LICENSE) for details
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/geusemaker/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/geusemaker/discussions)
+- Start with the [documentation index](docs/README.md) and [troubleshooting guide](#troubleshooting).
+- For defects, include the GeuseMaker version, command, sanitized error output, region,
+  and whether the run used text, JSON/YAML, wizard, or TUI mode.

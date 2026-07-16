@@ -1,8 +1,12 @@
 # GeuseMaker TUI Rollout — Brutalist Hybrid UI
 
-**Status:** Design / rollout plan (not implemented)  
-**Audience:** Contributors implementing wizard polish + optional full-screen Textual app  
-**Captured:** 2026-07-15  
+**Status:** Implemented foundation with follow-up live-screen work
+
+**Audience:** Contributors implementing wizard polish + optional full-screen Textual app
+
+**Captured:** 2026-07-15
+
+**Implementation alignment:** 2026-07-16
 **Related:** Epic 8 (interactive mode), `geusemaker/cli/branding.py`, `geusemaker/cli/components/`, `geusemaker/cli/interactive/`
 
 ---
@@ -28,16 +32,16 @@ Queried via PyPI + Textualize docs (Context7 / GitHub / PyPI).
 
 | Package | Current GeuseMaker pin | Latest stable | Rollout target |
 |---------|------------------------|---------------|----------------|
-| **textual** | _(not installed)_ | **8.2.8** (2026-06-30) | `textual>=8.2,<9` via optional extra `[tui]` |
-| **rich** | `>=13.9` | **15.0.0** (2026-04-12) | `rich>=14.2,<16` (Textual 8 requires `rich>=14.2`) |
-| **questionary** | `>=2.0` | **2.1.1** | `questionary>=2.1,<3` |
+| **textual** | `>=8.2,<9` in optional `[tui]` extra | **8.2.8** (2026-06-30) | Implemented |
+| **rich** | `>=14.2,<16` | **15.0.0** (2026-04-12) | Implemented |
+| **questionary** | `>=2.1,<3` | **2.1.1** | Implemented |
 | **click** | `>=8.1` | **8.4.2** | `click>=8.1,<9` (keep; bump floor optional to `>=8.2`) |
 | **prompt-toolkit** | (transitive via questionary) | **3.0.52** | leave transitive |
 
 ### Install shapes
 
 ```toml
-# pyproject.toml (planned)
+# pyproject.toml (implemented shape)
 dependencies = [
   "click>=8.1",
   "rich>=14.2,<16",
@@ -46,10 +50,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tui = [
-  "textual>=8.2,<9",
-  "textual-dev>=1.7",  # CSS hot-reload / debugging only in dev
-]
+tui = ["textual>=8.2,<9"]
 ```
 
 ```bash
@@ -311,6 +312,11 @@ Wizard stays linear and scrollback-friendly — **do not** embed the wizard insi
 
 ## 9. Phased rollout
 
+Phases 0–3 and the Phase 4 command/environment integration are implemented. The
+remaining work is replacing the current deploy/monitor/inspect workspace summaries
+with AWS-backed Textual workers and richer live widgets. That work must preserve the
+existing service boundaries and must be tested without making Textual mandatory.
+
 ### Phase 0 — Dependencies & design tokens (0.5–1 day)
 
 - Bump `rich` floor to `>=14.2,<16`
@@ -358,7 +364,7 @@ Wizard stays linear and scrollback-friendly — **do not** embed the wizard insi
 
 ---
 
-## 10. File / package map (planned)
+## 10. File / package map
 
 ```
 geusemaker/cli/
@@ -371,13 +377,8 @@ geusemaker/cli/
 ├── tui/                     # NEW (optional import)
 │   ├── app.py
 │   ├── brutalist.tcss
-│   ├── screens/
-│   │   ├── hub.py
-│   │   ├── deploy.py
-│   │   ├── monitor.py
-│   │   └── inspect.py
-│   └── adapters/
-│       └── progress.py      # ProgressEvent → widgets
+│   ├── app.py               # Current hub and mode workspaces
+│   └── brutalist.tcss       # Shared Textual presentation
 └── progress_events.py       # NEW shared contract
 ```
 
@@ -409,13 +410,15 @@ geusemaker/cli/
 
 ## 13. Done criteria
 
-- [ ] Trademark `MAIN_BANNER` / `DEPLOY_BANNER` retained and used as logo (CLI + TUI header)
-- [ ] Compact stage ASCII marks on process start in wizard logs
-- [ ] Brutalist theme applied consistently (wizard Rich + Textual TCSS)
-- [ ] `pip install geusemaker` → wizard only; `[tui]` → full-screen app
-- [ ] Services/orchestration free of Textual/questionary imports
-- [ ] Non-interactive JSON/YAML paths unchanged
-- [ ] This rollout’s Phase 0–4 exit checks satisfied
+- [x] Trademark banners retained; compact mark used in the TUI shell
+- [x] Compact stage ASCII marks available for wizard progress events
+- [x] Brutalist theme applied to Rich and Textual shells
+- [x] Base install remains wizard-only; `[tui]` enables the full-screen app
+- [x] Services/orchestration remain free of Textual/questionary imports
+- [x] Non-interactive JSON/YAML paths retain their one-document stdout contract
+- [x] `geusemaker tui`, `deploy --tui`, `monitor start --tui`, and `GEUSEMAKER_UI=tui`
+- [ ] Replace placeholder mode summaries with AWS-backed worker-driven live screens
+- [ ] Add optional Textual pilot tests when the `[tui]` extra is installed
 
 ---
 

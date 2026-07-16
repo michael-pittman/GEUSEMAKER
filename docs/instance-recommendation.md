@@ -1,5 +1,7 @@
 # Deployment shape and instance recommendations
 
+**Status:** Current implementation reference (reviewed 2026-07-16)
+
 GeuseMaker treats deployment topology and compute workload as separate decisions:
 
 - `tier` remains the backward-compatible persisted topology identifier: `dev`,
