@@ -173,10 +173,7 @@ class DestructionService:
                 else:
                     _progress("Deleting target group")
                     if not dry_run:
-                        try:
-                            self._elbv2_raw.delete_target_group(TargetGroupArn=state.target_group_arn)
-                        except Exception as exc:  # noqa: BLE001
-                            errors.append(f"Target group deletion failed: {exc}")
+                        self._delete_target_group_with_retry(state.target_group_arn, errors)
                     deleted.append(self._deleted("target_group", state.target_group_arn))
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Target group cleanup failed: {exc}")
@@ -453,6 +450,32 @@ class DestructionService:
                     deleted.append(self._deleted("route53_record", f"{rrset['Type']} {validation_record['Name']}"))
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"ACM validation record cleanup failed: {exc}")
+
+    def _delete_target_group_with_retry(
+        self,
+        target_group_arn: str,
+        errors: list[str],
+        max_attempts: int = 6,
+        delay_seconds: int = 10,
+    ) -> bool:
+        """Delete a target group, retrying while the (async) ALB deletion releases it.
+
+        delete_load_balancer returns before listeners are torn down, so an
+        immediate delete_target_group races it and fails with ResourceInUse.
+        """
+        import time as _time
+
+        for attempt in range(max_attempts):
+            try:
+                self._elbv2_raw.delete_target_group(TargetGroupArn=target_group_arn)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                if "ResourceInUse" in str(exc) and attempt < max_attempts - 1:
+                    _time.sleep(delay_seconds)
+                    continue
+                errors.append(f"Target group deletion failed: {exc}")
+                return False
+        return False
 
     def _delete_certificate_with_retry(
         self,
