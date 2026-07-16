@@ -223,32 +223,17 @@ class Tier1Orchestrator:
             partial_state: Partial deployment state
             error: The exception that caused the failure
         """
-        # Update state to reflect failure
+        # Update state to reflect failure.
+        # Copy the WHOLE partial state: rebuilding it field-by-field silently
+        # dropped Tier 2/3 fields (alb_arn, target_group_arn, certificate_arn),
+        # so a later destroy skipped the ordered ALB teardown and cascaded into
+        # subnet/VPC DependencyViolations (observed live).
         # Note: Error message is logged and displayed to user, not stored in state
-        failed_state = DeploymentState(
-            stack_name=partial_state.stack_name,
-            status="failed",
-            created_at=partial_state.created_at,
-            updated_at=datetime.now(UTC),
-            vpc_id=partial_state.vpc_id,
-            subnet_ids=partial_state.subnet_ids,
-            storage_subnet_id=partial_state.storage_subnet_id,
-            security_group_id=partial_state.security_group_id,
-            efs_id=partial_state.efs_id,
-            efs_mount_target_id=partial_state.efs_mount_target_id,
-            efs_mount_target_ip=partial_state.efs_mount_target_ip,
-            iam_role_name=partial_state.iam_role_name,
-            iam_role_arn=partial_state.iam_role_arn,
-            iam_instance_profile_name=partial_state.iam_instance_profile_name,
-            iam_instance_profile_arn=partial_state.iam_instance_profile_arn,
-            instance_id=partial_state.instance_id or "",
-            keypair_name=partial_state.keypair_name,
-            public_ip=partial_state.public_ip,
-            private_ip=partial_state.private_ip,
-            n8n_url=partial_state.n8n_url,
-            cost=partial_state.cost,
-            config=partial_state.config,
-            resource_provenance=partial_state.resource_provenance,
+        failed_state = partial_state.model_copy(
+            update={
+                "status": "failed",
+                "updated_at": datetime.now(UTC),
+            }
         )
 
         asyncio.run(self.state_manager.save_deployment(failed_state))

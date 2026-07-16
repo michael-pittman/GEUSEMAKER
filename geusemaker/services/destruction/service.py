@@ -637,11 +637,12 @@ class DestructionService:
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Listener cleanup for ALB {lb_name} failed: {exc}")
 
-                # Delete target groups associated with this ALB
+                # Delete target groups associated with this ALB (with retry:
+                # listener deletion is asynchronous and briefly holds them)
                 try:
                     tg_resp = self._elbv2_raw.describe_target_groups(LoadBalancerArn=lb_arn)
                     for tg in tg_resp.get("TargetGroups", []):
-                        self._elbv2_raw.delete_target_group(TargetGroupArn=tg["TargetGroupArn"])
+                        self._delete_target_group_with_retry(tg["TargetGroupArn"], errors)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Target group cleanup for ALB {lb_name} failed: {exc}")
 
