@@ -86,3 +86,6 @@ logs/
 
 # Junk directory (user's temporary files)
 Junk/
+
+# Project virtualenvs
+.venv312/
