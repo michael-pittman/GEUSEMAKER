@@ -20,6 +20,7 @@ from textual.screen import Screen
 from textual.widgets import Label, ListItem, ListView, Static
 
 from geusemaker.cli.display.listing import render_inspection
+from geusemaker.cli.tui.theme import GM_VARIABLES_TCSS
 from geusemaker.infra.state import StateManager
 from geusemaker.models import DeploymentState
 
@@ -35,18 +36,11 @@ class InspectScreen(Screen[None]):
         ("m", "open_monitor", "MONITOR"),
     ]
 
-    # NOTE: Textual does not expose app-stylesheet variables to DEFAULT_CSS,
-    # so the $gm-* tokens are redeclared here with the brutalist.tcss values.
-    DEFAULT_CSS = """
-    $gm-surface: #0a0c0f;
-    $gm-panel: #12151a;
-    $gm-ink: #e8ecef;
-    $gm-muted: #6b7280;
-    $gm-signal: #c8f542;
-    $gm-warn: #f5a524;
-    $gm-fault: #ff4d4d;
-    $gm-rule: #2a3038;
-
+    # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
+    # app-stylesheet variables in Textual 8.2.8).
+    DEFAULT_CSS = (
+        GM_VARIABLES_TCSS
+        + """
     InspectScreen {
         background: $gm-surface;
         color: $gm-ink;
@@ -97,6 +91,7 @@ class InspectScreen(Screen[None]):
         padding: 1 0;
     }
     """
+    )
 
     class OpenLogs(Message):
         """Request the hosting app to open the logs view for a stack."""

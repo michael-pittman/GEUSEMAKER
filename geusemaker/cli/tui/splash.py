@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from geusemaker.cli.branding import MAIN_BANNER
+from geusemaker.cli.tui.theme import GM_SIGNAL
 
 BANNER_LINES = [line for line in MAIN_BANNER.splitlines() if line.strip()]
 SWEEP_WIDTH = max(len(line) for line in BANNER_LINES)
@@ -17,7 +18,7 @@ BOOT_LINES = [
     "[dim]▸ LOADING OPERATIONS HUB[/dim]",
     "[dim]▸ THEME · BRUTALIST[/dim]",
     "[dim]▸ AWS CONTACT · ON REQUEST ONLY[/dim]",
-    "[bold #c8f542]▸ READY — PRESS ANY KEY[/bold #c8f542]",
+    f"[bold {GM_SIGNAL}]▸ READY — PRESS ANY KEY[/bold {GM_SIGNAL}]",
 ]
 
 LINE_STAGGER = 0.08
@@ -65,7 +66,7 @@ class SplashScreen(Screen[None]):
     def _advance_sweep(self) -> None:
         self._sweep_progress = min(self._sweep_progress + 2, SWEEP_WIDTH)
         bar = "━" * self._sweep_progress
-        self.query_one("#splash-sweep", Static).update(f"[bold #c8f542]{bar}[/bold #c8f542]")
+        self.query_one("#splash-sweep", Static).update(f"[bold {GM_SIGNAL}]{bar}[/bold {GM_SIGNAL}]")
         if self._sweep_progress >= SWEEP_WIDTH:
             self._sweep_timer.stop()
 

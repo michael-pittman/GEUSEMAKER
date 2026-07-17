@@ -36,6 +36,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, ListItem, ListView, RichLog, Static
 
+from geusemaker.cli.tui.theme import GM_FAULT, GM_MUTED, GM_SIGNAL, GM_VARIABLES_TCSS, GM_WARN
 from geusemaker.infra.state import StateError, StateManager
 
 #: Dependency-injection seam: ``(instance_id, target_key) -> lines``. The
@@ -66,11 +67,11 @@ _GROUP_LABELS = {"file": "INSTANCE", "container": "CONTAINERS"}
 
 # Uppercase bracketed badges are literal text under Rich markup (tags must
 # start lowercase/#/@//), so [WAIT]/[ENDED]/... render verbatim.
-_OK_MARK = "[bold #c8f542][OK][/bold #c8f542]"
-_WAIT_MARK = "[bold #f5a524][WAIT][/bold #f5a524]"
-_ERROR_MARK = "[bold #ff4d4d][ERROR][/bold #ff4d4d]"
-_ENDED_MARK = "[bold #6b7280][ENDED][/bold #6b7280]"
-_DETACHED_MARK = "[bold #f5a524][DETACHED][/bold #f5a524]"
+_OK_MARK = f"[bold {GM_SIGNAL}][OK][/bold {GM_SIGNAL}]"
+_WAIT_MARK = f"[bold {GM_WARN}][WAIT][/bold {GM_WARN}]"
+_ERROR_MARK = f"[bold {GM_FAULT}][ERROR][/bold {GM_FAULT}]"
+_ENDED_MARK = f"[bold {GM_MUTED}][ENDED][/bold {GM_MUTED}]"
+_DETACHED_MARK = f"[bold {GM_WARN}][DETACHED][/bold {GM_WARN}]"
 
 
 class LogsScreen(Screen[None]):
@@ -81,19 +82,11 @@ class LogsScreen(Screen[None]):
         Binding("s", "stop_stream", "STOP STREAM"),
     ]
 
-    # $gm-* tokens mirror geusemaker/cli/tui/brutalist.tcss. Textual scopes CSS
-    # variables per stylesheet source, so the app-stylesheet definitions are not
-    # visible here and must be restated for DEFAULT_CSS to resolve.
-    DEFAULT_CSS = """
-    $gm-surface: #0a0c0f;
-    $gm-panel: #12151a;
-    $gm-ink: #e8ecef;
-    $gm-muted: #6b7280;
-    $gm-signal: #c8f542;
-    $gm-warn: #f5a524;
-    $gm-fault: #ff4d4d;
-    $gm-rule: #2a3038;
-
+    # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
+    # app-stylesheet variables in Textual 8.2.8).
+    DEFAULT_CSS = (
+        GM_VARIABLES_TCSS
+        + """
     LogsScreen {
         background: $gm-surface;
         color: $gm-ink;
@@ -157,6 +150,7 @@ class LogsScreen(Screen[None]):
         color: $gm-ink;
     }
     """
+    )
 
     def __init__(
         self,

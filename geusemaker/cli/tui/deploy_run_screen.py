@@ -34,6 +34,7 @@ from textual.widgets import DataTable, RichLog, Static
 
 from geusemaker.cli.branding import STAGE_GLYPHS
 from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent, Stage
+from geusemaker.cli.tui.theme import GM_FAULT, GM_INK, GM_MUTED, GM_SIGNAL, GM_VARIABLES_TCSS, GM_WARN
 from geusemaker.models import DeploymentConfig, DeploymentState
 
 #: Dependency-injection seam: blocking callable that runs the full deployment,
@@ -71,16 +72,16 @@ STATUS_DONE = "DONE"
 STATUS_ERROR = "ERROR"
 
 _STATUS_STYLES = {
-    STATUS_PENDING: "#6b7280",
-    STATUS_ACTIVE: "bold #c8f542",
-    STATUS_DONE: "#e8ecef",
-    STATUS_ERROR: "bold #ff4d4d",
+    STATUS_PENDING: GM_MUTED,
+    STATUS_ACTIVE: f"bold {GM_SIGNAL}",
+    STATUS_DONE: GM_INK,
+    STATUS_ERROR: f"bold {GM_FAULT}",
 }
 
-_OK_MARK = "[bold #c8f542][OK][/bold #c8f542]"
-_WAIT_MARK = "[bold #f5a524][WAIT][/bold #f5a524]"
-_WARN_MARK = "[bold #f5a524][WARN][/bold #f5a524]"
-_ERROR_MARK = "[bold #ff4d4d][ERROR][/bold #ff4d4d]"
+_OK_MARK = f"[bold {GM_SIGNAL}][OK][/bold {GM_SIGNAL}]"
+_WAIT_MARK = f"[bold {GM_WARN}][WAIT][/bold {GM_WARN}]"
+_WARN_MARK = f"[bold {GM_WARN}][WARN][/bold {GM_WARN}]"
+_ERROR_MARK = f"[bold {GM_FAULT}][ERROR][/bold {GM_FAULT}]"
 
 
 def stages_for_config(config: DeploymentConfig) -> list[Stage]:
@@ -144,19 +145,11 @@ class DeployRunScreen(Screen[None]):
         Binding("escape", "request_dismiss", "BACK"),
     ]
 
-    # $gm-* tokens mirror geusemaker/cli/tui/brutalist.tcss. Textual scopes CSS
-    # variables per stylesheet source, so the app-stylesheet definitions are not
-    # visible here and must be restated for DEFAULT_CSS to resolve.
-    DEFAULT_CSS = """
-    $gm-surface: #0a0c0f;
-    $gm-panel: #12151a;
-    $gm-ink: #e8ecef;
-    $gm-muted: #6b7280;
-    $gm-signal: #c8f542;
-    $gm-warn: #f5a524;
-    $gm-fault: #ff4d4d;
-    $gm-rule: #2a3038;
-
+    # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
+    # app-stylesheet variables in Textual 8.2.8).
+    DEFAULT_CSS = (
+        GM_VARIABLES_TCSS
+        + """
     DeployRunScreen {
         background: $gm-surface;
         color: $gm-ink;
@@ -195,6 +188,7 @@ class DeployRunScreen(Screen[None]):
         color: $gm-ink;
     }
     """
+    )
 
     def __init__(
         self,
@@ -246,10 +240,10 @@ class DeployRunScreen(Screen[None]):
         for stage in self.stages:
             glyph = STAGE_GLYPHS[stage].splitlines()[0]
             table.add_row(
-                Text(glyph, style="#6b7280"),
+                Text(glyph, style=GM_MUTED),
                 Text(stage.upper()),
                 Text(STATUS_PENDING, style=_STATUS_STYLES[STATUS_PENDING]),
-                Text("—", style="#6b7280"),
+                Text("—", style=GM_MUTED),
                 key=stage,
             )
         self.query_one("#deploy-run-events", RichLog).write(
@@ -362,7 +356,7 @@ class DeployRunScreen(Screen[None]):
                 self._instance_id = event.resource_id
             self._set_resource(stage, event.resource_id)
         if event.level == "error":
-            self._write_log(f"{_ERROR_MARK} \\[{stage.upper()}] [#ff4d4d]{escape(event.message)}[/#ff4d4d]")
+            self._write_log(f"{_ERROR_MARK} \\[{stage.upper()}] [{GM_FAULT}]{escape(event.message)}[/{GM_FAULT}]")
         elif event.level == "warn":
             self._write_log(f"{_WARN_MARK} \\[{stage.upper()}] {escape(event.message)}")
         else:
@@ -380,7 +374,7 @@ class DeployRunScreen(Screen[None]):
             if self.stage_statuses[stage] != STATUS_ERROR:
                 self._set_stage(stage, STATUS_DONE)
         banner = f"DEPLOY COMPLETE · STACK {state.stack_name.upper()}"
-        self.query_one("#deploy-run-status", Static).update(f"[bold #c8f542]{banner}[/bold #c8f542]")
+        self.query_one("#deploy-run-status", Static).update(f"[bold {GM_SIGNAL}]{banner}[/bold {GM_SIGNAL}]")
         self._write_log(f"{_OK_MARK} {banner}")
 
     def _on_deploy_failed(self, message: str) -> None:
@@ -392,7 +386,7 @@ class DeployRunScreen(Screen[None]):
         if self._active_stage is not None and self.stage_statuses.get(self._active_stage) == STATUS_ACTIVE:
             self._set_stage(self._active_stage, STATUS_ERROR)
         banner = f"DEPLOY FAILED · {escape(message)}"
-        self.query_one("#deploy-run-status", Static).update(f"[bold #ff4d4d]{banner}[/bold #ff4d4d]")
+        self.query_one("#deploy-run-status", Static).update(f"[bold {GM_FAULT}]{banner}[/bold {GM_FAULT}]")
         self._write_log(f"{_ERROR_MARK} {banner}")
         self._write_log(f"{_WARN_MARK} SCREEN LEFT OPEN FOR READING · ESC TO CLOSE")
 

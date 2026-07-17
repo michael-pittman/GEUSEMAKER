@@ -518,9 +518,10 @@ double-escape during deploy); the suite passes without `[tui]` installed
 
 Implementation note: `$gm-*` variables from `brutalist.tcss` are NOT visible in
 widget/screen `DEFAULT_CSS` (Textual 8.2.8 scopes variables per stylesheet
-source — `UnresolvedVariableError`). Screens currently restate the 8 tokens in
-their `DEFAULT_CSS`; hoisting them into `GeuseMakerApp.get_css_variables()` is
-the designated cleanup when a third screen lands.
+source — `UnresolvedVariableError`). Cleanup done 2026-07-17: `tui/theme.py`
+owns `GM_TOKENS`/`GM_VARIABLES_TCSS`; every screen prepends the shared block to
+its `DEFAULT_CSS`, and `test_theme.py` asserts brutalist.tcss stays in sync
+and no screen restates values.
 
 **Exit:** No placeholder summaries remain; every pane either renders real data
 or an explicit empty/error state. Worker cancellation verified with pilot

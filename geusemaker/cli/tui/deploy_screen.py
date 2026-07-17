@@ -27,6 +27,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 from geusemaker.cli.configuration import ConfigBuilder, DeploymentDraft
+from geusemaker.cli.tui.theme import GM_FAULT, GM_INK, GM_SIGNAL, GM_VARIABLES_TCSS
 from geusemaker.config import ConfigurationError
 from geusemaker.models import DeploymentConfig
 
@@ -79,8 +80,8 @@ FIELD_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
 )
 
-_SIGNAL = "bold #c8f542"
-_FAULT = "bold #ff4d4d"
+_SIGNAL = f"bold {GM_SIGNAL}"
+_FAULT = f"bold {GM_FAULT}"
 
 #: Textual 8.x blank-select sentinel type (``Select.NULL`` is a ``NoSelection``).
 _NO_SELECTION = type(Select.NULL)
@@ -149,18 +150,11 @@ class DeployScreen(Screen[None]):
         Binding("v", "validate_draft", "VALIDATE"),
     ]
 
-    # NOTE: Textual does not expose app-stylesheet variables to DEFAULT_CSS,
-    # so the $gm-* tokens are redeclared here with the brutalist.tcss values.
-    DEFAULT_CSS = """
-    $gm-surface: #0a0c0f;
-    $gm-panel: #12151a;
-    $gm-ink: #e8ecef;
-    $gm-muted: #6b7280;
-    $gm-signal: #c8f542;
-    $gm-warn: #f5a524;
-    $gm-fault: #ff4d4d;
-    $gm-rule: #2a3038;
-
+    # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
+    # app-stylesheet variables in Textual 8.2.8).
+    DEFAULT_CSS = (
+        GM_VARIABLES_TCSS
+        + """
     DeployScreen {
         background: $gm-surface;
         color: $gm-ink;
@@ -236,6 +230,7 @@ class DeployScreen(Screen[None]):
         margin-right: 1;
     }
     """
+    )
 
     class LaunchRequested(Message):
         """Request the hosting app to execute a deployment for a built config."""
@@ -430,7 +425,7 @@ class DeployScreen(Screen[None]):
         for field, messages in errors.items():
             for message in messages:
                 report.append(f"{field.upper()}\n", style=_FAULT)
-                report.append(f"  {message}\n", style="#e8ecef")
+                report.append(f"  {message}\n", style=GM_INK)
         pane.update(report)
 
     @staticmethod

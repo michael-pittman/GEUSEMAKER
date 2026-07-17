@@ -27,6 +27,7 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, RichLog, Static
 
+from geusemaker.cli.tui.theme import GM_FAULT, GM_SIGNAL, GM_VARIABLES_TCSS, GM_WARN
 from geusemaker.infra.state import StateError, StateManager
 from geusemaker.models.health import HealthCheckResult
 from geusemaker.services.health.client import HealthCheckClient
@@ -39,9 +40,9 @@ HealthChecker = Callable[[str], Awaitable[list[HealthCheckResult]]]
 
 EVENT_LOG_MAX_LINES = 2000
 
-_OK_MARK = "[bold #c8f542][OK][/bold #c8f542]"
-_WAIT_MARK = "[bold #f5a524][WAIT][/bold #f5a524]"
-_ERROR_MARK = "[bold #ff4d4d][ERROR][/bold #ff4d4d]"
+_OK_MARK = f"[bold {GM_SIGNAL}][OK][/bold {GM_SIGNAL}]"
+_WAIT_MARK = f"[bold {GM_WARN}][WAIT][/bold {GM_WARN}]"
+_ERROR_MARK = f"[bold {GM_FAULT}][ERROR][/bold {GM_FAULT}]"
 
 
 async def default_health_checker(host: str) -> list[HealthCheckResult]:
@@ -65,19 +66,11 @@ class MonitorScreen(Screen[None]):
         Binding("escape", "dismiss_screen", "BACK"),
     ]
 
-    # $gm-* tokens mirror geusemaker/cli/tui/brutalist.tcss. Textual scopes CSS
-    # variables per stylesheet source, so the app-stylesheet definitions are not
-    # visible here and must be restated for DEFAULT_CSS to resolve.
-    DEFAULT_CSS = """
-    $gm-surface: #0a0c0f;
-    $gm-panel: #12151a;
-    $gm-ink: #e8ecef;
-    $gm-muted: #6b7280;
-    $gm-signal: #c8f542;
-    $gm-warn: #f5a524;
-    $gm-fault: #ff4d4d;
-    $gm-rule: #2a3038;
-
+    # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
+    # app-stylesheet variables in Textual 8.2.8).
+    DEFAULT_CSS = (
+        GM_VARIABLES_TCSS
+        + """
     MonitorScreen {
         background: $gm-surface;
         color: $gm-ink;
@@ -128,6 +121,7 @@ class MonitorScreen(Screen[None]):
         color: $gm-muted;
     }
     """
+    )
 
     def __init__(
         self,
@@ -228,9 +222,9 @@ class MonitorScreen(Screen[None]):
             detail = self._describe(result)
             if result.healthy:
                 healthy_count += 1
-                status_cell = Text("OK", style="bold #c8f542")
+                status_cell = Text("OK", style=f"bold {GM_SIGNAL}")
             else:
-                status_cell = Text("FAIL", style="bold #ff4d4d")
+                status_cell = Text("FAIL", style=f"bold {GM_FAULT}")
             table.add_row(
                 Text(name.upper()),
                 status_cell,

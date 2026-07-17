@@ -16,6 +16,7 @@ from geusemaker.cli.tui.inspect_screen import InspectScreen
 from geusemaker.cli.tui.logs_screen import LogsScreen, LogStreamFactory
 from geusemaker.cli.tui.monitor_screen import HealthChecker, MonitorScreen
 from geusemaker.cli.tui.splash import SplashScreen
+from geusemaker.cli.tui.theme import GM_SIGNAL
 
 PIPELINE_STAGES = ("validate", "efs", "iam", "ec2", "alb", "cdn", "finalize")
 
@@ -149,7 +150,7 @@ class GeuseMakerApp(App[None]):
         message = "SELECT AN OPERATION. READ-ONLY VIEWS DO NOT CONTACT AWS UNTIL REQUESTED."
         summary.update(message)
         log.clear()
-        log.write(f"[bold #c8f542][READY][/bold #c8f542] {message}")
+        log.write(f"[bold {GM_SIGNAL}][READY][/bold {GM_SIGNAL}] {message}")
         log.write("")
         log.write("[dim]DEPLOY PIPELINE[/dim]")
         log.write(_stage_glyph_strip())
