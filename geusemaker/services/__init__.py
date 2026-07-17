@@ -36,6 +36,7 @@ from geusemaker.services.iam import IAMService
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.rollback import RollbackService
 from geusemaker.services.sg import SecurityGroupService
+from geusemaker.services.spot_automation import SpotAutomationService
 from geusemaker.services.ssm import SSMService
 from geusemaker.services.state_recovery import StateRecoveryService
 from geusemaker.services.update import (
@@ -71,6 +72,7 @@ __all__ = [
     "DestructionService",
     "OrphanDetector",
     "SpotSelectionService",
+    "SpotAutomationService",
     "CostEstimator",
     "BudgetService",
     "CostReportService",

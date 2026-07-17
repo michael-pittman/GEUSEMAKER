@@ -23,6 +23,7 @@ from geusemaker.services.efs import EFSService
 from geusemaker.services.iam import IAMService
 from geusemaker.services.route53 import Route53Service
 from geusemaker.services.sg import SecurityGroupService
+from geusemaker.services.spot_automation import SpotAutomationService
 
 
 class DestructionService:
@@ -54,6 +55,7 @@ class DestructionService:
         self.cloudfront = CloudFrontService(self.client_factory, region=region)
         self.acm = ACMService(self.client_factory, region=region)
         self.route53 = Route53Service(self.client_factory)
+        self.spot_automation = SpotAutomationService(self.client_factory, region=region)
         self._ec2_raw = ec2_client or self.client_factory.get_client("ec2", region)
         self._elbv2_raw = elbv2_client or self.client_factory.get_client("elbv2", region)
 
@@ -122,6 +124,24 @@ class DestructionService:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"CloudFront cleanup failed: {exc}")
 
+        # Stop replacement automation before deleting its ALB target group or IAM profile.
+        try:
+            if state.auto_scaling_group_name or state.launch_template_id:
+                _progress("Deleting Spot interruption monitoring and Auto Scaling resources")
+                if not dry_run:
+                    self.spot_automation.delete(
+                        asg_name=state.auto_scaling_group_name,
+                        launch_template_id=state.launch_template_id,
+                        rule_names=state.spot_event_rule_names,
+                        log_group_name=state.spot_event_log_group,
+                    )
+                if state.auto_scaling_group_name:
+                    deleted.append(self._deleted("auto_scaling_group", state.auto_scaling_group_name))
+                if state.launch_template_id:
+                    deleted.append(self._deleted("launch_template", state.launch_template_id))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Spot automation cleanup failed: {exc}")
+
         # ALB cleanup (must be before EC2 instance termination)
         # Order: deregister targets → delete listeners → delete ALB → delete target group
         # The target group cannot be deleted while a listener still references it,
@@ -187,7 +207,7 @@ class DestructionService:
             errors.append(f"DNS/certificate cleanup failed: {exc}")
 
         try:
-            if state.instance_id:
+            if state.instance_id and not state.auto_scaling_group_name:
                 if provenance.get("instance") == "reused":
                     _progress("Preserving reused EC2 instance")
                     preserved.append(

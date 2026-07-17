@@ -656,7 +656,6 @@ CLI / optional TUI → Orchestration → Services → Infrastructure
 ## Documentation
 
 - **Documentation index**: [docs/README.md](docs/README.md)
-- **Project Guide**: [CLAUDE.md](CLAUDE.md) — coding patterns and repository conventions
 - **PRD**: [docs/prd/index.md](docs/prd/index.md) — canonical product requirements
 - **Architecture**: [docs/architecture/index.md](docs/architecture/index.md) — canonical system design
 - **Stories**: [docs/stories/](docs/stories/) — implementation records

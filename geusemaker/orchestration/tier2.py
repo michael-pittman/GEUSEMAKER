@@ -147,6 +147,15 @@ class Tier2Orchestrator(Tier1Orchestrator):
         # Step 10: Register EC2 instance with target group
         console.print(f"{EMOJI['info']} Registering EC2 instance with target group...", verbosity="info")
         self._register_instance(tier1_state.instance_id, alb_info)
+        if tier1_state.auto_scaling_group_name:
+            self.spot_automation_service.attach_target_group(
+                tier1_state.auto_scaling_group_name,
+                alb_info["target_group_arn"],
+            )
+            console.print(
+                f"{EMOJI['check']} Auto Scaling replacements will register with the target group automatically",
+                verbosity="info",
+            )
 
         # Step 11: Wait for instance to become healthy
         console.print(f"{EMOJI['check']} Waiting for target health checks to pass...", verbosity="info")
@@ -535,12 +544,17 @@ class Tier2Orchestrator(Tier1Orchestrator):
             security_group_id=tier1_state.security_group_id,
             efs_id=tier1_state.efs_id,
             efs_mount_target_id=tier1_state.efs_mount_target_id,
+            efs_mount_target_ids=tier1_state.efs_mount_target_ids,
             efs_mount_target_ip=tier1_state.efs_mount_target_ip,
             iam_role_name=tier1_state.iam_role_name,
             iam_role_arn=tier1_state.iam_role_arn,
             iam_instance_profile_name=tier1_state.iam_instance_profile_name,
             iam_instance_profile_arn=tier1_state.iam_instance_profile_arn,
             instance_id=tier1_state.instance_id,
+            launch_template_id=tier1_state.launch_template_id,
+            auto_scaling_group_name=tier1_state.auto_scaling_group_name,
+            spot_event_log_group=tier1_state.spot_event_log_group,
+            spot_event_rule_names=tier1_state.spot_event_rule_names,
             keypair_name=tier1_state.keypair_name,
             public_ip=tier1_state.public_ip,
             private_ip=tier1_state.private_ip,

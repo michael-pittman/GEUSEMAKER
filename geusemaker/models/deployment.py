@@ -199,6 +199,7 @@ class DeploymentState(BaseModel):
     security_group_id: str
     efs_id: str
     efs_mount_target_id: str
+    efs_mount_target_ids: list[str] = Field(default_factory=list)
     efs_mount_target_ip: str | None = None
     instance_id: str
     keypair_name: str
@@ -213,6 +214,10 @@ class DeploymentState(BaseModel):
     alb_arn: str | None = None
     alb_dns: str | None = None
     target_group_arn: str | None = None
+    launch_template_id: str | None = None
+    auto_scaling_group_name: str | None = None
+    spot_event_log_group: str | None = None
+    spot_event_rule_names: list[str] = Field(default_factory=list)
     cloudfront_id: str | None = None
     cloudfront_domain: str | None = None
     storage_subnet_id: str | None = None

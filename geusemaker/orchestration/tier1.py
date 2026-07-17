@@ -25,6 +25,7 @@ from geusemaker.services.efs import EFSService
 from geusemaker.services.iam import IAMService
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.sg import SecurityGroupService
+from geusemaker.services.spot_automation import SpotAutomationService
 from geusemaker.services.userdata import UserDataGenerator
 from geusemaker.services.vpc import VPCService
 
@@ -51,6 +52,7 @@ class Tier1Orchestrator:
         self.sg_service = SecurityGroupService(self.client_factory, region=region)
         self.ec2_service = EC2Service(self.client_factory, region=region)
         self.iam_service = IAMService(self.client_factory, region=region)
+        self.spot_automation_service = SpotAutomationService(self.client_factory, region=region)
         # Initialize spot selector with EC2 service for accurate AMI-based dry-run checks
         self.spot_selector = spot_selector or SpotSelectionService(
             self.client_factory,
@@ -488,17 +490,27 @@ class Tier1Orchestrator:
         # Wait for EFS to transition from "creating" to "available" state
         self.efs_service.wait_for_available(efs_id)
 
-        # Create mount target in the storage subnet
+        # A production Spot replacement may land in any configured public AZ. EFS
+        # requires one mount target per AZ, so provision that coverage up front.
         chosen_storage_subnet_id = vpc_info["chosen_storage_subnet_id"]
-        mt_id = self.efs_service.create_mount_target(
-            fs_id=efs_id,
-            subnet_id=chosen_storage_subnet_id,
-            security_groups=[sg_id],
-        )
+        mount_subnet_ids = [chosen_storage_subnet_id]
+        if config.tier in {"automation", "gpu"} and config.use_spot:
+            seen_azs: set[str] = set()
+            mount_subnet_ids = []
+            for subnet in vpc_info["vpc"].public_subnets:
+                if subnet.availability_zone not in seen_azs:
+                    mount_subnet_ids.append(subnet.subnet_id)
+                    seen_azs.add(subnet.availability_zone)
 
-        # Wait for mount target to become available
-        self.efs_service.wait_for_mount_target_available(mt_id)
+        mount_target_ids = [
+            self.efs_service.create_mount_target(fs_id=efs_id, subnet_id=subnet_id, security_groups=[sg_id])
+            for subnet_id in mount_subnet_ids
+        ]
+        for mount_target_id in mount_target_ids:
+            self.efs_service.wait_for_mount_target_available(mount_target_id)
+        mt_id = mount_target_ids[0]
         mt_ip = self.efs_service.get_mount_target_ip(mt_id)
+        vpc_info["efs_mount_target_ids"] = mount_target_ids
 
         return efs_id, mt_id, mt_ip
 
@@ -546,6 +558,7 @@ class Tier1Orchestrator:
             security_group_id=sg_id,
             efs_id=efs_id,
             efs_mount_target_id=mt_id,
+            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
             efs_mount_target_ip=mt_ip,
             instance_id="",  # Not created yet
             keypair_name=config.keypair_name or "",
@@ -681,7 +694,7 @@ class Tier1Orchestrator:
         userdata_payload: bytes,
         iam_info: dict[str, str],
         selection: InstanceSelection,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """
         Launch EC2 instance with UserData and IAM instance profile.
 
@@ -734,6 +747,42 @@ class Tier1Orchestrator:
                 },
             },
         ]
+
+        if config.tier in {"automation", "gpu"} and selection.is_spot:
+            console.print(
+                f"{EMOJI['info']} Creating production Spot Auto Scaling group with Capacity Rebalancing...",
+                verbosity="info",
+            )
+            tags = {
+                "Name": config.stack_name,
+                "Stack": config.stack_name,
+                "Tier": config.tier,
+                "ManagedBy": "GeuseMaker",
+            }
+            resources = self.spot_automation_service.create(
+                stack_name=config.stack_name,
+                image_id=ami_id,
+                instance_type=config.instance_type,
+                subnet_ids=vpc_info["public_subnet_ids"],
+                security_group_ids=[sg_id],
+                instance_profile_name=iam_info["profile_name"],
+                user_data=userdata_payload,
+                block_device_mappings=block_device_mappings,
+                tags=tags,
+                key_name=config.keypair_name,
+            )
+            self.ec2_service.wait_for_running(resources.instance_id)
+            instance_desc = self.ec2_service.describe_instance(resources.instance_id)
+            return {
+                "instance_id": resources.instance_id,
+                "public_ip": instance_desc.get("PublicIpAddress"),
+                "private_ip": instance_desc.get("PrivateIpAddress", ""),
+                "spot_fallback_to_on_demand": False,
+                "launch_template_id": resources.launch_template_id,
+                "auto_scaling_group_name": resources.auto_scaling_group_name,
+                "spot_event_log_group": resources.log_group_name,
+                "spot_event_rule_names": list(resources.event_rule_names),
+            }
 
         # Launch instance with IAM instance profile for EFS mount
         # Use Name (simpler and more reliable for newly created profiles in same region)
@@ -921,12 +970,17 @@ class Tier1Orchestrator:
             security_group_id=sg_id,
             efs_id=efs_id,
             efs_mount_target_id=mt_id,
+            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
             efs_mount_target_ip=mt_ip,
             iam_role_name=iam_info["role_name"],
             iam_role_arn=iam_info["role_arn"],
             iam_instance_profile_name=iam_info["profile_name"],
             iam_instance_profile_arn=iam_info["profile_arn"],
             instance_id=instance_id,
+            launch_template_id=instance_info.get("launch_template_id"),
+            auto_scaling_group_name=instance_info.get("auto_scaling_group_name"),
+            spot_event_log_group=instance_info.get("spot_event_log_group"),
+            spot_event_rule_names=instance_info.get("spot_event_rule_names", []),
             keypair_name=config.keypair_name or "",
             public_ip=public_ip,
             private_ip=private_ip,

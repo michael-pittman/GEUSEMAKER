@@ -54,6 +54,7 @@ def test_tier2_orchestrator_creates_alb_when_enabled() -> None:
         instance_type="t3.medium",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -121,6 +122,7 @@ def test_tier2_orchestrator_skips_alb_when_disabled() -> None:
         tier="automation",
         instance_type="t3.medium",
         enable_alb=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -159,6 +161,7 @@ def test_tier2_orchestrator_requires_minimum_two_subnets() -> None:
         instance_type="t3.medium",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -187,6 +190,7 @@ def test_tier2_orchestrator_n8n_url_uses_alb_dns() -> None:
         instance_type="t3.medium",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -224,6 +228,7 @@ def test_tier2_orchestrator_degrades_to_http_without_certificate() -> None:
         enable_alb=True,
         enable_https=True,
         alb_certificate_arn=None,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
