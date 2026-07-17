@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import time
 from collections.abc import Generator, Iterable
 from typing import Any
@@ -10,6 +11,18 @@ from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 from geusemaker.infra import AWSClientFactory
 from geusemaker.services.base import BaseService
+
+# Single source of truth for CLI/TUI service -> Docker container name mapping.
+CONTAINER_LOG_SERVICES: dict[str, str] = {
+    "n8n": "n8n",
+    "ollama": "ollama",
+    "qdrant": "qdrant",
+    "crawl4ai": "crawl4ai",
+    "postgres": "postgres",
+}
+
+# Consecutive SSM command failures tolerated before a streaming generator aborts.
+_MAX_CONSECUTIVE_STREAM_FAILURES = 3
 
 
 class SSMService(BaseService):
@@ -325,6 +338,214 @@ class SSMService(BaseService):
             time.sleep(poll_interval)
 
     @staticmethod
+    def resolve_container_name(service: str) -> str:
+        """Map a logical service name to its Docker container name.
+
+        Raises:
+            ValueError: If the service is not a known container-backed service.
+        """
+        container = CONTAINER_LOG_SERVICES.get(service.lower())
+        if container is None:
+            known = ", ".join(sorted(CONTAINER_LOG_SERVICES))
+            raise ValueError(f"Unknown service '{service}'. Known services: {known}")
+        return container
+
+    def tail_file(
+        self,
+        instance_id: str,
+        path: str,
+        *,
+        poll_interval: float = 2.0,
+        timeout_seconds: int = 600,
+    ) -> Generator[str, None, None]:
+        """Tail a remote file via SSM with byte-offset resume.
+
+        Each poll sends ``tail -c +<offset+1> <path>`` (path shell-quoted) and
+        yields the newly appended content split into lines (``str.splitlines``;
+        a line written across a poll boundary may arrive as two yielded
+        fragments). The byte offset advances by the full UTF-8 byte length of
+        each received chunk.
+
+        Stops when:
+        - ``timeout_seconds`` elapses: yields a final ``[TAIL TIMEOUT]`` line, then returns
+        - the caller closes the generator (clean ``GeneratorExit``)
+        - ``_MAX_CONSECUTIVE_STREAM_FAILURES`` consecutive command failures occur (RuntimeError)
+
+        A missing file is surfaced once as a ``[TAIL]`` notice line and polling
+        continues (the file may appear later, e.g. model-preload).
+
+        Raises:
+            RuntimeError: If the SSM agent is not ready within 60 seconds, or
+                after repeated consecutive command failures.
+        """
+        if not self.wait_for_ssm_agent(instance_id, timeout_seconds=60):
+            raise RuntimeError(f"SSM agent not ready on instance {instance_id} after 60 seconds")
+
+        quoted_path = shlex.quote(path)
+        offset = 0
+        consecutive_failures = 0
+        missing_file_notified = False
+        end_time = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < end_time:
+            try:
+                command_id = self.send_shell_commands(
+                    instance_id,
+                    [f"tail -c +{offset + 1} {quoted_path}"],
+                    comment=f"Tail {path}",
+                    timeout_seconds=30,
+                )
+                result = self.wait_for_command(command_id, instance_id, timeout_seconds=30)
+            except RuntimeError as exc:
+                consecutive_failures += 1
+                if consecutive_failures >= _MAX_CONSECUTIVE_STREAM_FAILURES:
+                    raise RuntimeError(
+                        f"Tailing {path} failed {consecutive_failures} consecutive times: {exc}"
+                    ) from exc
+                time.sleep(poll_interval)
+                continue
+
+            if result.get("Status") != "Success":
+                reason = (result.get("StandardErrorContent") or result.get("StandardOutputContent") or "").strip()
+                if "no such file" in reason.lower():
+                    consecutive_failures = 0
+                    if not missing_file_notified:
+                        missing_file_notified = True
+                        yield f"[TAIL] {path} not available yet: {reason}"
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= _MAX_CONSECUTIVE_STREAM_FAILURES:
+                        raise RuntimeError(
+                            f"Tailing {path} failed {consecutive_failures} consecutive times: "
+                            f"{reason or result.get('Status', 'unknown status')}"
+                        )
+                time.sleep(poll_interval)
+                continue
+
+            consecutive_failures = 0
+            missing_file_notified = False
+            chunk = result.get("StandardOutputContent", "")
+            if chunk:
+                offset += len(chunk.encode("utf-8"))
+                yield from chunk.splitlines()
+            time.sleep(poll_interval)
+
+        yield f"[TAIL TIMEOUT] Stopped tailing {path} after {timeout_seconds}s"
+
+    def follow_container_logs(
+        self,
+        instance_id: str,
+        service: str,
+        *,
+        poll_interval: float = 3.0,
+        timeout_seconds: int = 600,
+    ) -> Generator[str, None, None]:
+        """Follow a Docker container's logs via SSM polling.
+
+        The first poll runs ``docker logs --timestamps --tail 50 <container>``
+        to seed recent context; subsequent polls run
+        ``docker logs --timestamps --since <last-timestamp> <container>`` and
+        de-duplicate on the timestamp boundary (lines with a timestamp <= the
+        last one seen are dropped). Yielded lines have the leading Docker
+        timestamp stripped; lines without a parseable timestamp are yielded
+        as-is and bypass de-duplication.
+
+        Stop and failure semantics match :meth:`tail_file` (explicit
+        ``[FOLLOW TIMEOUT]`` line, clean close(), RuntimeError after repeated
+        consecutive failures, missing container surfaced once and re-polled).
+
+        Raises:
+            ValueError: If the service is not a known container-backed service
+                (raised eagerly, before the generator starts).
+            RuntimeError: If the SSM agent is not ready within 60 seconds, or
+                after repeated consecutive command failures.
+        """
+        container = self.resolve_container_name(service)
+        return self._follow_container_logs(
+            instance_id,
+            container,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _follow_container_logs(
+        self,
+        instance_id: str,
+        container: str,
+        *,
+        poll_interval: float,
+        timeout_seconds: int,
+    ) -> Generator[str, None, None]:
+        """Inner polling generator for :meth:`follow_container_logs`."""
+        if not self.wait_for_ssm_agent(instance_id, timeout_seconds=60):
+            raise RuntimeError(f"SSM agent not ready on instance {instance_id} after 60 seconds")
+
+        last_timestamp: str | None = None
+        consecutive_failures = 0
+        missing_container_notified = False
+        end_time = time.monotonic() + timeout_seconds
+
+        while time.monotonic() < end_time:
+            if last_timestamp is None:
+                command = f"docker logs --timestamps --tail 50 {container} 2>&1"
+            else:
+                command = f"docker logs --timestamps --since {shlex.quote(last_timestamp)} {container} 2>&1"
+
+            try:
+                command_id = self.send_shell_commands(
+                    instance_id,
+                    [command],
+                    comment=f"Follow {container} container logs",
+                    timeout_seconds=30,
+                )
+                result = self.wait_for_command(command_id, instance_id, timeout_seconds=30)
+            except RuntimeError as exc:
+                consecutive_failures += 1
+                if consecutive_failures >= _MAX_CONSECUTIVE_STREAM_FAILURES:
+                    raise RuntimeError(
+                        f"Following {container} logs failed {consecutive_failures} consecutive times: {exc}"
+                    ) from exc
+                time.sleep(poll_interval)
+                continue
+
+            if result.get("Status") != "Success":
+                reason = (result.get("StandardErrorContent") or result.get("StandardOutputContent") or "").strip()
+                if "no such container" in reason.lower():
+                    consecutive_failures = 0
+                    if not missing_container_notified:
+                        missing_container_notified = True
+                        yield f"[FOLLOW] Container {container} not available yet: {reason}"
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures >= _MAX_CONSECUTIVE_STREAM_FAILURES:
+                        raise RuntimeError(
+                            f"Following {container} logs failed {consecutive_failures} consecutive times: "
+                            f"{reason or result.get('Status', 'unknown status')}"
+                        )
+                time.sleep(poll_interval)
+                continue
+
+            consecutive_failures = 0
+            missing_container_notified = False
+            for line in result.get("StandardOutputContent", "").splitlines():
+                timestamp, separator, message = line.partition(" ")
+                if separator and self._looks_like_docker_timestamp(timestamp):
+                    if last_timestamp is not None and timestamp <= last_timestamp:
+                        continue
+                    last_timestamp = timestamp
+                    yield message
+                elif line:
+                    yield line
+            time.sleep(poll_interval)
+
+        yield f"[FOLLOW TIMEOUT] Stopped following {container} logs after {timeout_seconds}s"
+
+    @staticmethod
+    def _looks_like_docker_timestamp(token: str) -> bool:
+        """Return True if the token looks like a Docker RFC3339 log timestamp."""
+        return len(token) >= 20 and token[:4].isdigit() and token[4:5] == "-" and "T" in token and token.endswith("Z")
+
+    @staticmethod
     def _is_invocation_not_ready(exc: RuntimeError) -> bool:
         """Return True if the invocation has not been created yet."""
         cause = exc.__cause__
@@ -334,4 +555,4 @@ class SSMService(BaseService):
         return False
 
 
-__all__ = ["SSMService"]
+__all__ = ["CONTAINER_LOG_SERVICES", "SSMService"]

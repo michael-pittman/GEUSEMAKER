@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent, ProgressLevel, Stage
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState, VPCInfo
 from geusemaker.models.compute import InstanceSelection, SavingsComparison
@@ -40,10 +41,13 @@ class Tier1Orchestrator:
         state_manager: StateManager | None = None,
         pricing_service: PricingService | None = None,
         spot_selector: SpotSelectionService | None = None,
+        on_progress: ProgressCallback | None = None,
     ):
         self.client_factory = client_factory or AWSClientFactory()
         self.region = region
         self.state_manager = state_manager or StateManager()
+        self.on_progress = on_progress
+        self._last_progress_stage: Stage | None = None
         self.pricing_service = pricing_service or PricingService(self.client_factory, region=region)
         self._preselected_selection = None
         self._deploy_start_time: float | None = None
@@ -61,6 +65,23 @@ class Tier1Orchestrator:
             ec2_service=self.ec2_service,
         )
         self.userdata_generator = UserDataGenerator()
+
+    def _emit_progress(
+        self,
+        stage: Stage,
+        message: str,
+        *,
+        level: ProgressLevel = "info",
+        resource_id: str | None = None,
+    ) -> None:
+        """Emit a UI-neutral progress event to the optional callback.
+
+        No-op when no callback is registered; tracks the most recent stage so
+        failures can be attributed to the stage that was in flight.
+        """
+        self._last_progress_stage = stage
+        if self.on_progress is not None:
+            self.on_progress(ProgressEvent(stage=stage, message=message, level=level, resource_id=resource_id))
 
     def _generate_postgres_password(self, length: int = 32) -> str:
         """Generate a secure random password for PostgreSQL.
@@ -139,8 +160,15 @@ class Tier1Orchestrator:
         """
         try:
             self._deploy_start_time = time.monotonic()
-            return self._deploy_impl(config)
+            final_state = self._deploy_impl(config)
+            self._emit_progress("finalize", f"Deployment state saved for {config.stack_name}")
+            return final_state
         except Exception as exc:
+            self._emit_progress(
+                self._last_progress_stage or "validate",
+                f"Deployment failed: {exc}",
+                level="error",
+            )
             # Attempt to load partial state to check for created resources
             partial_state = asyncio.run(self.state_manager.load_deployment(config.stack_name))
 
@@ -264,24 +292,32 @@ class Tier1Orchestrator:
             )
 
         start_time = self._deploy_start_time or time.monotonic()
+        self._emit_progress("spot", f"Selecting compute capacity for {config.instance_type}")
         selection = self._select_instance(config)
 
         # Step 1: Setup networking (VPC, subnets)
+        self._emit_progress("vpc", "Configuring VPC networking")
         vpc_info = self._setup_networking(config, selection)
+        self._emit_progress("vpc", "Networking ready", resource_id=vpc_info["vpc"].vpc_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "networking")
 
         # Step 2: Create or reuse security group
+        self._emit_progress("sg", "Configuring security group")
         sg_id, sg_provenance = self._create_security_group(config, vpc_info)
+        self._emit_progress("sg", "Security group ready", resource_id=sg_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "security group creation")
 
         # Step 3: Create EFS filesystem and mount target
+        self._emit_progress("efs", "Creating EFS filesystem and mount targets")
         efs_id, mt_id, mt_ip = self._create_storage(config, vpc_info, sg_id)
+        self._emit_progress("efs", "EFS filesystem available", resource_id=efs_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "storage setup")
 
         # Step 4: Save partial state after EFS creation
         self._save_partial_state(config, vpc_info, sg_id, sg_provenance, efs_id, mt_id, mt_ip, selection)
 
         # Step 5: Create IAM role and instance profile for EFS mount
+        self._emit_progress("iam", "Creating IAM role and instance profile")
         iam_info = self._create_iam_resources(config)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "IAM setup")
 
@@ -291,15 +327,12 @@ class Tier1Orchestrator:
             log_group_name = f"/geusemaker/{config.stack_name}/spot-events"
             self.iam_service.attach_spot_runtime_policy(
                 iam_info["role_name"],
-                lease_table_arn=(
-                    f"arn:aws:dynamodb:{self.region}:{account_id}:table/{lease_table_name}"
-                ),
-                log_group_arn=(
-                    f"arn:aws:logs:{self.region}:{account_id}:log-group:{log_group_name}"
-                ),
+                lease_table_arn=(f"arn:aws:dynamodb:{self.region}:{account_id}:table/{lease_table_name}"),
+                log_group_arn=(f"arn:aws:logs:{self.region}:{account_id}:log-group:{log_group_name}"),
             )
 
         # Step 6: Generate UserData script
+        self._emit_progress("userdata", "Generating instance UserData")
         userdata_payload, postgres_password = self._generate_userdata(
             config,
             efs_id,
@@ -309,6 +342,7 @@ class Tier1Orchestrator:
         self._check_timeout(start_time, config.rollback_timeout_minutes, "UserData generation")
 
         # Step 7: Launch EC2 instance with IAM instance profile
+        self._emit_progress("ec2", f"Launching {config.instance_type} instance")
         instance_info = self._launch_instance(
             config,
             vpc_info,
@@ -317,6 +351,7 @@ class Tier1Orchestrator:
             iam_info,
             selection,
         )
+        self._emit_progress("ec2", "Instance running", resource_id=instance_info["instance_id"])
         self._check_timeout(start_time, config.rollback_timeout_minutes, "instance launch")
 
         # If spot capacity vanished at launch and we fell back to on-demand,
@@ -709,13 +744,9 @@ class Tier1Orchestrator:
             spot_protection_enabled=spot_protection_enabled,
             spot_lease_table_name=(f"{config.stack_name}-spot-lease"[:255] if spot_protection_enabled else None),
             spot_auto_scaling_group_name=(f"{config.stack_name}-spot-asg" if spot_protection_enabled else None),
-            spot_log_group_name=(
-                f"/geusemaker/{config.stack_name}/spot-events" if spot_protection_enabled else None
-            ),
+            spot_log_group_name=(f"/geusemaker/{config.stack_name}/spot-events" if spot_protection_enabled else None),
             spot_launch_hook_name=(f"{config.stack_name[:42]}-launch" if spot_protection_enabled else None),
-            spot_termination_hook_name=(
-                f"{config.stack_name[:39]}-terminate" if spot_protection_enabled else None
-            ),
+            spot_termination_hook_name=(f"{config.stack_name[:39]}-terminate" if spot_protection_enabled else None),
         )
         userdata_script = self.userdata_generator.generate(userdata_config)
         userdata_payload = self._compress_userdata(userdata_script)

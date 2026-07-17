@@ -14,6 +14,7 @@ from geusemaker.cli.components import (
     spinner,
     tables,
 )
+from geusemaker.cli.configuration import ConfigBuilder
 from geusemaker.cli.interactive.prompts import InteractivePrompts
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig
@@ -638,34 +639,12 @@ class InteractiveFlow:
         return None if choice == 0 else available_fs[choice - 1]
 
     def _build_config(self) -> DeploymentConfig:
-        return DeploymentConfig(
-            stack_name=self.state.get("stack_name", "geusemaker"),
-            tier=self.state.get("tier", "dev"),
-            workload=self.state.get("workload"),
-            instance_preference=self.state.get("instance_preference", "balanced"),
-            region=self.state.get("region", "us-east-1"),
-            instance_type=self.state.get("instance_type", "t3.medium"),
-            use_spot=self.state.get("use_spot", True),
-            os_type=self.state.get("os_type", "ubuntu-22.04").lower(),
-            architecture=self.state.get("architecture", "x86_64").lower(),
-            ami_type=self.state.get("ami_type", "base").lower(),
-            ami_id=self.state.get("ami_id"),
-            # Feature flags (Tier 2/3 enable ALB/CDN in DeploymentRunner normalization too)
-            enable_https=self.state.get("enable_https", True),
-            tier1_use_self_signed=self.state.get("tier1_use_self_signed", True),
-            force_https_redirect=self.state.get("force_https_redirect", True),
-            alb_domain_name=self.state.get("alb_domain_name"),
-            alb_hosted_zone_id=self.state.get("alb_hosted_zone_id"),
-            vpc_id=self.state.get("vpc_id"),
-            subnet_id=self.state.get("subnet_id"),
-            attach_internet_gateway=self.state.get("attach_internet_gateway", False),
-            public_subnet_ids=self.state.get("public_subnet_ids"),
-            private_subnet_ids=self.state.get("private_subnet_ids"),
-            storage_subnet_id=self.state.get("storage_subnet_id"),
-            security_group_id=self.state.get("security_group_id"),
-            efs_id=self.state.get("efs_id"),
-            keypair_name=self.state.get("keypair_name"),
-        )
+        # Delegate defaults + construction to the shared configuration seam so
+        # the wizard and the Textual deploy form cannot silently diverge. This
+        # also propagates fields deploy.py prefills into initial_state (e.g.
+        # budget_limit, enable_alb/enable_cdn, runtime bundle and rollback
+        # settings) that the previous hand-rolled construction dropped.
+        return ConfigBuilder.from_initial_state(self.state).apply_defaults().build()
 
     def _serializable_state(self) -> dict[str, Any]:
         state = self.state.copy()

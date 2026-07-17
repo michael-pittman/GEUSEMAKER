@@ -6,9 +6,8 @@ import asyncio
 from pathlib import Path
 from urllib.parse import urlparse
 
-import yaml
-
 from geusemaker.cli.components import ProgressTracker, messages, spinner, tables
+from geusemaker.cli.configuration import ConfigBuilder
 from geusemaker.cli.interactive.flow import InteractiveAbort, InteractiveFlow
 from geusemaker.cli.interactive.runner import (
     DeploymentRunner,
@@ -92,7 +91,7 @@ class InteractiveDeployer:
 
     def _show_summary(self, state: DeploymentState) -> None:
         host = state.public_ip or state.private_ip
-        
+
         # Build URLs based on tier
         if state.config.tier == "dev":
             # Tier 1: HTTPS through Nginx proxy
@@ -116,7 +115,7 @@ class InteractiveDeployer:
                 qdrant_ui_url = f"{parsed.scheme}://{parsed.netloc}/qdrant-ui/"
             else:
                 qdrant_ui_url = "-"
-        
+
         summary = [
             f"Status: {state.status}",
             f"Region: {state.config.region}",
@@ -140,8 +139,10 @@ class InteractiveDeployer:
         target_dir = self.state_manager.config_path
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{config.stack_name}.yaml"
-        data = config.model_dump(mode="json", exclude_none=True)
-        target.write_text(yaml.safe_dump(data, sort_keys=False))
+        # Single serialization path shared with the TUI: ConfigBuilder.to_yaml()
+        # emits the same ConfigLoader-compatible shape this method used to
+        # produce inline (model_dump(mode="json", exclude_none=True)).
+        target.write_text(ConfigBuilder.from_initial_state(config.model_dump()).to_yaml())
         return target
 
 

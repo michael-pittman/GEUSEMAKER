@@ -8,6 +8,19 @@ from typing import Any
 from geusemaker.models import SubnetResource, VPCResource
 
 
+class StubClientFactory:
+    """Client factory stand-in that never touches boto3/botocore.
+
+    Service constructors eagerly create boto3 clients; in environments without
+    working AWS credentials that raises at orchestrator construction time.
+    Returning a plain object keeps construction offline; tests then replace
+    every service with stubs before calling deploy().
+    """
+
+    def get_client(self, service: str, region: str = "us-east-1") -> object:  # noqa: ARG002
+        return object()
+
+
 @dataclass
 class StubStateManager:
     """Minimal async state manager used across orchestration tests."""
@@ -401,6 +414,7 @@ class StubUserDataGenerator:
 
 __all__ = [
     "StubALBService",
+    "StubClientFactory",
     "StubCloudFrontService",
     "StubEC2Service",
     "StubEFSService",

@@ -280,6 +280,7 @@ class DeploymentRunner:
             config,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=emit,
         )
         # Share pre-selected compute choice to align AZ + pricing with validation
         orchestrator._preselected_selection = selection
@@ -309,6 +310,7 @@ class DeploymentRunner:
         config: DeploymentConfig,
         pricing_service: PricingService,
         spot_selector: SpotSelectionService,
+        on_progress: ProgressCallback | None = None,
     ):
         if config.enable_cdn or config.tier == "gpu":
             return Tier3Orchestrator(
@@ -317,6 +319,7 @@ class DeploymentRunner:
                 state_manager=self.state_manager,
                 pricing_service=pricing_service,
                 spot_selector=spot_selector,
+                on_progress=on_progress,
             )
         if config.enable_alb or config.tier == "automation":
             return Tier2Orchestrator(
@@ -325,6 +328,7 @@ class DeploymentRunner:
                 state_manager=self.state_manager,
                 pricing_service=pricing_service,
                 spot_selector=spot_selector,
+                on_progress=on_progress,
             )
         return Tier1Orchestrator(
             self.client_factory,
@@ -332,6 +336,7 @@ class DeploymentRunner:
             state_manager=self.state_manager,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=on_progress,
         )
 
 

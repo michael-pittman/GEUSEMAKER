@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.progress_events import ProgressCallback
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration.errors import OrchestrationError
@@ -25,6 +26,7 @@ class Tier3Orchestrator(Tier2Orchestrator):
         state_manager: StateManager | None = None,
         pricing_service=None,
         spot_selector=None,
+        on_progress: ProgressCallback | None = None,
     ):
         super().__init__(
             client_factory,
@@ -32,6 +34,7 @@ class Tier3Orchestrator(Tier2Orchestrator):
             state_manager,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=on_progress,
         )
         self.cloudfront_service = CloudFrontService(self.client_factory, region=region)
 
@@ -80,10 +83,16 @@ class Tier3Orchestrator(Tier2Orchestrator):
             raise OrchestrationError("Tier 2 deployment did not create ALB. Cannot proceed with CloudFront creation.")
 
         # Step 11: Create CloudFront distribution with ALB as origin
+        self._emit_progress("cdn", "Creating CloudFront distribution")
         console.print(f"\n{EMOJI['rocket']} Creating CloudFront distribution...", verbosity="info")
         cloudfront_info = self._create_cloudfront(config, tier2_state)
 
         # Step 12: Wait for CloudFront to deploy (15-30 minutes typical)
+        self._emit_progress(
+            "cdn",
+            "Waiting for CloudFront deployment",
+            resource_id=cloudfront_info["distribution_id"],
+        )
         console.print(
             f"{EMOJI['info']} Waiting for CloudFront deployment (this can take 15-30 minutes)...",
             verbosity="info",

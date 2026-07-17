@@ -1,6 +1,6 @@
 # GeuseMaker TUI Rollout — Brutalist Hybrid UI
 
-**Status:** Implemented foundation with follow-up live-screen work
+**Status:** Implemented visual/routing foundation; operational Textual screens and the wizard/TUI configuration seam remain
 
 **Audience:** Contributors implementing wizard polish + optional full-screen Textual app
 
@@ -18,7 +18,7 @@ Ship a **modern, brutalist** terminal experience with two shells over the same P
 | Shell | Default? | Stack | Purpose |
 |-------|----------|-------|---------|
 | **Wizard** | Yes | Click + Rich + questionary | Guided deploy, scrollback-friendly, CI-safe |
-| **Full TUI** | Opt-in | Textual 8.x | Multi-pane status, live deploy, monitor hub |
+| **Full TUI** | Opt-in | Textual 8.x | Operations shell today; multi-pane status, deploy, and monitoring are rollout targets |
 
 Non-goals: Go rewrite, replacing Click for non-interactive commands, making Textual required for CI.
 
@@ -198,7 +198,8 @@ Click (entry / flags / CI)
 └── Machine output (json/yaml) — unchanged
 
 Shared domain (no UI imports):
-  InteractiveFlow / ConfigBuilder
+  DeploymentDraft / ConfigBuilder (cli/configuration/ — implemented 2026-07-17)
+  InteractiveFlow (wizard adapter; delegates config construction to ConfigBuilder)
   DeploymentRunner + ProgressEvent
   Tier*Orchestrator, services, StateManager
 ```
@@ -208,10 +209,16 @@ Shared domain (no UI imports):
 ```bash
 geusemaker deploy                 # wizard (default)
 geusemaker deploy --tui           # full-screen deploy (requires [tui])
-geusemaker tui                    # hub: deploy / monitor / status / logs
-geusemaker monitor --tui          # multi-pane live monitor
-GEUSEMAKER_UI=tui geusemaker …    # env override when TTY
+geusemaker tui                    # placeholder hub: deploy / monitor / inspect
+geusemaker monitor start STACK --tui  # opens monitor workspace; live worker pending
+GEUSEMAKER_UI=tui geusemaker deploy … # supported by deploy
+GEUSEMAKER_UI=tui geusemaker monitor start STACK  # supported by monitor start
 ```
+
+`deploy --tui` and `monitor start --tui` currently route into the appropriate
+Textual workspace, but those workspaces are summaries rather than operational
+equivalents of the wizard and Rich monitor. `GEUSEMAKER_UI` is not a global CLI
+switch; only commands that explicitly inspect it support the override.
 
 If `[tui]` missing: clear error → `pip install 'geusemaker[tui]'`.
 
@@ -241,7 +248,11 @@ class ProgressEvent:
     ts: datetime | None = None
 ```
 
-- `DeploymentRunner` / orchestrator hooks call `on_progress(ProgressEvent)`.
+- `DeploymentRunner` currently calls `on_progress(ProgressEvent)` for broad
+  selection, validation, topology, userdata, and finalize milestones.
+- Tier orchestrators do not yet emit granular VPC/SG/EFS/IAM/EC2/ALB/CDN/health
+  events. Add callback propagation before treating the event stream as a full
+  deployment timeline.
 - Wizard adapter: print stage glyph + Rich line.
 - Textual adapter: append to `RichLog` / update timeline widget.
 - Tests: assert event sequence with a recording callback (no TTY needed).
@@ -262,7 +273,9 @@ Touch points (existing seams — keep them):
 
 ### Polish checklist
 
-- [ ] Step chrome: `STEP 03/11 · INSTANCE` uppercase, muted help under prompt
+- [ ] Step chrome: `STEP · INSTANCE` uppercase, muted help under prompt. If a
+      numeric counter is shown, compute it from the conditional visible steps;
+      `InteractiveFlow` currently defines 13 internal steps.
 - [ ] Shared questionary `Style` mapped from brutalist tokens (hex only)
 - [ ] Searchable / scrollable selects for long VPC/subnet/AMI lists
 - [ ] Consistent Esc/back/quit via `DialogBack` / `DialogAbort`
@@ -272,6 +285,36 @@ Touch points (existing seams — keep them):
 - [ ] Resume menu: resume / restart / export YAML
 
 Wizard stays linear and scrollback-friendly — **do not** embed the wizard inside Textual unless a later epic explicitly merges them.
+
+### Required wizard/TUI configuration seam
+
+**Status: implemented (2026-07-17).** `geusemaker/cli/configuration/` provides
+`DeploymentDraft` (fields mirrored reflectively from `DeploymentConfig`) and
+`ConfigBuilder` (defaults, quick-mode presets, conditional `visible_fields()`,
+per-field `validate()`, `build()`, YAML round-trip). `InteractiveFlow._build_config`
+and the wizard YAML export both delegate to it — this also fixed a bug where the
+wizard silently dropped nine prefilled fields (budget_limit, enable_alb/cdn,
+runtime bundle, cert ARNs, rollback settings). Wizard-parity tests assert both
+adapters produce identical `DeploymentConfig` objects. The Textual deploy form
+builds on this layer; TUI YAML import remains for the deploy screen.
+
+The extracted model:
+
+```text
+Wizard prompts ─┐
+                ├─> DeploymentDraft / ConfigBuilder ─> DeploymentConfig
+Textual forms ──┘                │
+                                 ├─> discovery and validation results
+                                 └─> YAML import/export
+
+DeploymentConfig ─> DeploymentRunner ─> ProgressEvent stream
+```
+
+The shared layer should own defaults, conditional field visibility, validation,
+discovery selections, serialization, and `DeploymentConfig` construction. The
+wizard retains back/abort/resume behavior; Textual owns form focus and screen
+navigation. Both adapters should be tested against the same configuration
+fixtures so they cannot silently produce different deployments.
 
 ---
 
@@ -287,22 +330,28 @@ Wizard stays linear and scrollback-friendly — **do not** embed the wizard insi
 │ [Deploy]     │  left: checklist / steps                 │
 │ [Monitor]    │  right: live log + cost                  │
 │ [Inspect]    │                                          │
-│ [Logs]       │                                          │
+│ [Logs]*      │                                          │
 ├──────────────┴──────────────────────────────────────────┤
 │ FOOTER  key bindings  │  spot/on-demand  │  last event  │  dock bottom
 └─────────────────────────────────────────────────────────┘
 ```
 
+`*` Logs and Status are target views. The implemented sidebar currently exposes
+Hub, Deploy, Monitor, and Inspect only.
+
 ### 8.2 Screens (priority order)
 
 1. **Monitor** — health table + log pane (port existing Rich Live from `monitor.py` / userdata stream)
 2. **Status / Inspect** — resource inventory
-3. **Deploy** — checklist driven by `ProgressEvent`; config from wizard export or in-TUI form
+3. **Deploy** — form backed by the extracted `DeploymentDraft`/`ConfigBuilder`,
+   with YAML import/export and a checklist driven by `ProgressEvent`
 4. **Hub** — `geusemaker tui` landing
 
 ### 8.3 Textual implementation notes
 
-- `App` + `Screen` per mode; `CSS_PATH = "brutalist.tcss"`
+- The current foundation uses one `App` body and swaps summary content; only the
+  splash is a `Screen`. Introduce `Screen` classes per operational mode when
+  workers/forms are added; `CSS_PATH = "brutalist.tcss"` is already implemented.
 - `border: heavy` / `tall`; background `$surface`; accent `$signal`
 - AWS calls in workers; UI thread only applies events
 - Bindings: `q` quit, `?` help, `tab` focus cycle, `d` deploy, `m` monitor
@@ -316,7 +365,7 @@ change the machine-output (json/yaml) contract.
 
 | Stream | Source | Transport | Status today |
 |--------|--------|-----------|--------------|
-| Deployment progress | `DeploymentRunner` / tier orchestrators | `ProgressEvent` callback (in-process) | Contract implemented; TUI adapter missing |
+| Deployment progress | `DeploymentRunner` today; tier orchestrators after callback propagation | `ProgressEvent` callback (in-process) | Broad contract implemented; granular orchestration events and TUI adapter missing |
 | Deployment userdata log | `/var/log/geusemaker-userdata.log` | `SSMService.stream_userdata_logs()` generator, 2s poll | Implemented (CLI `logs --follow`); TUI adapter missing |
 | Instance (server-side) logs | `/var/log/geusemaker/model-preload.log`, `/var/log/amazon/efs/mount.log`, syslog/journal | SSM `cat`/tail polling | SSH-only today — needs a generic `SSMService.tail_file()` primitive |
 | Docker container logs | n8n, ollama, qdrant, crawl4ai, postgres | SSM `docker logs` | One-shot `--tail` only — needs incremental follow |
@@ -368,11 +417,12 @@ change the machine-output (json/yaml) contract.
 
 ## 9. Phased rollout
 
-Phases 0–3 and the Phase 4 command/environment integration are implemented. The
-remaining work is Phase 5: replacing the current deploy/monitor/inspect workspace
-summaries with AWS-backed Textual workers and the live streams defined in §8.4.
-That work must preserve the existing service boundaries and must be tested without
-making Textual mandatory.
+Phases 0–2 are substantially implemented. Phase 3 has a visual shell, splash,
+TCSS, navigation, and command routing, but not the promised operational screens.
+Only the command/environment-routing portion of Phase 4 exists. The remaining
+work begins with the shared configuration seam, then granular progress events,
+then AWS-backed screens and the live streams in §8.4. It must preserve existing
+service boundaries and remain testable without making Textual mandatory.
 
 ### Phase 0 — Dependencies & design tokens (0.5–1 day)
 
@@ -395,43 +445,82 @@ making Textual mandatory.
 
 ### Phase 2 — ProgressEvent contract (2–3 days)
 
-- Introduce `ProgressEvent` + callback on `DeploymentRunner` / tier orchestrators
+- Introduce `ProgressEvent` + callback on `DeploymentRunner` (implemented)
+- Propagate the callback through tier orchestrators for granular resource stages
 - Migrate wizard progress off ad-hoc console prints where practical
 - Recording tests for stage order (Tier 1 minimum)
 
-**Exit:** Wizard consumes events only; orchestrator tests assert sequence without Rich.
+**Exit:** Wizard deployment milestones consume events; orchestrator tests assert
+the complete tier-specific sequence without Rich. **Not yet met.**
 
 ### Phase 3 — Textual shell MVP (5–8 days)
 
-- `geusemaker/cli/tui/` package: app, screens, TCSS, adapters
-- Commands: `geusemaker tui`, `deploy --tui`, `monitor --tui`
+- `geusemaker/cli/tui/` package: app and TCSS foundation implemented; operational
+  screens and adapters pending
+- Commands: `geusemaker tui`, `deploy --tui`, `monitor start STACK --tui`
 - Monitor + Status screens first (read-mostly)
-- Header uses `MAIN_BANNER` trademark; timeline shows stage glyphs as labels
+- Splash uses the `MAIN_BANNER` trademark; the future timeline shows stage
+  glyphs as labels
 
-**Exit:** Opt-in TUI runs on TTY; missing extra prints install hint; no service-layer Textual imports.
+**Current state:** Opt-in shell runs on a TTY, the missing extra prints an install
+hint, and service/orchestration layers do not import Textual. Monitor, Status,
+Inspect, and Deploy exit behavior is not yet operationally complete.
 
 ### Phase 4 — Deploy-in-TUI + hardening (3–5 days)
 
-- Deploy screen driven by ProgressEvent
-- Feature flag / `GEUSEMAKER_UI`
+- Extract `DeploymentDraft` / `ConfigBuilder` and YAML import/export
+- Deploy screen driven by `ProgressEvent`
+- Feature flag / `GEUSEMAKER_UI` for supported commands (routing implemented)
 - Docs: README + architecture tech-stack update
 - Manual checklist: dumb terminal, `NO_COLOR`, JSON deploy, Ctrl+C cleanup
 
-**Exit:** Default remains wizard; TUI is documented optional experience.
+**Exit:** Default remains the wizard; TUI deployment produces the same validated
+`DeploymentConfig` and invokes the same `DeploymentRunner`. **Not yet met.**
 
 ### Phase 5 — Live streams wiring (contract in §8.4) (4–6 days)
 
 Order of delivery (read-only first, service additions last):
 
-1. **Inspect (disk-only)** — StateManager-backed stack picker + inventory pane;
-   jump-off keys to logs/monitor. No AWS calls.
-2. **Monitor** — health worker (existing health-check client) + userdata tail
-   via existing `stream_userdata_logs()` in a threaded worker.
-3. **Deploy** — checklist timeline consuming `ProgressEvent`; attach userdata
-   stream at the `userdata` stage; explicit terminal states.
-4. **Logs view** — new `SSMService.tail_file()` (instance logs) and
-   `SSMService.follow_container_logs()` (docker) primitives + pane picker;
-   ship CLI `logs --follow --service <name>` parity in the same change.
+0. **Configuration seam** — DONE (2026-07-17): `cli/configuration/` package
+   (DeploymentDraft + ConfigBuilder), wizard `_build_config` and YAML export
+   delegate to it, 64 tests incl. wizard-parity and YAML round-trip; fixed the
+   nine-field silent-drop bug in the wizard path.
+1. **Inspect (disk-only)** — DONE (2026-07-16): `tui/inspect_screen.py`,
+   StateManager-backed picker + inventory pane, explicit empty state,
+   `l`/`m` jump-off messages handled by the app. No AWS calls. 9 pilot tests.
+2. **Monitor** — DONE (2026-07-16, health portion): `tui/monitor_screen.py`,
+   async polling worker over the health-check client with DI seam, WAIT/ERROR
+   explicit states, cancellation-on-dismiss verified. 6 pilot tests +
+   6 app-integration pilot tests. Userdata tail attaches in step 3/4.
+3. **Deploy** — DONE (2026-07-17): `tui/deploy_screen.py` (ConfigBuilder-driven
+   form — reflective widgets, live visibility, validation pane, YAML
+   import/export, LaunchRequested message) + `tui/deploy_run_screen.py`
+   (ProgressEvent glyph timeline PENDING/ACTIVE/DONE/ERROR with resource IDs,
+   event log, userdata stream attach at the `userdata` stage via DI seam,
+   explicit success/failure terminal states, double-escape guard while
+   running). `deploy --tui` now lands on the operational form. 17 screen pilot
+   tests + 2 app-integration tests. Orchestrator ProgressEvent propagation was
+   DONE 2026-07-16.
+4. **Logs view** — DONE (2026-07-17): `SSMService.tail_file()` (byte-offset
+   resume) and `SSMService.follow_container_logs()` (docker `--since` polling
+   with timestamp de-dupe; container mapping single-sourced in ssm.py) +
+   `tui/logs_screen.py` (grouped INSTANCE/CONTAINERS target picker, WAIT/
+   ENDED/DETACHED/ERROR explicit states, per-attach cancellation tokens),
+   reached from Inspect via `l`. CLI parity shipped:
+   `logs --follow --service <name>` now streams containers. 18 service tests +
+   8 screen pilot tests + integration test.
+
+**Phase 5 exit criteria met (2026-07-17):** no placeholder summaries remain —
+every mode renders real data or an explicit empty/error state; worker
+cancellation is pilot-tested (mode switch mid-stream, dismiss mid-stream,
+double-escape during deploy); the suite passes without `[tui]` installed
+(importorskip-guarded).
+
+Implementation note: `$gm-*` variables from `brutalist.tcss` are NOT visible in
+widget/screen `DEFAULT_CSS` (Textual 8.2.8 scopes variables per stylesheet
+source — `UnresolvedVariableError`). Screens currently restate the 8 tokens in
+their `DEFAULT_CSS`; hoisting them into `GeuseMakerApp.get_css_variables()` is
+the designated cleanup when a third screen lands.
 
 **Exit:** No placeholder summaries remain; every pane either renders real data
 or an explicit empty/error state. Worker cancellation verified with pilot
@@ -448,10 +537,16 @@ geusemaker/cli/
 │   ├── theme.py             # brutalist ColorTheme + Rich Theme factory
 │   ├── dialogs.py           # wizard prompts (polish)
 │   └── stage.py             # print_stage helper (new)
-├── interactive/             # wizard flow (keep)
+├── interactive/             # wizard adapter, prompt navigation, resume behavior
+├── configuration/           # DeploymentDraft + ConfigBuilder + YAML round-trip (Phase 5.0)
 ├── tui/                     # NEW (optional import)
-│   ├── app.py               # Hub + mode workspaces, mode-switch transitions
+│   ├── app.py               # Hub, mode routing, screen push/pop, jump-off handlers
 │   ├── splash.py            # Animated boot splash (MAIN_BANNER reveal, skip on key)
+│   ├── inspect_screen.py    # Disk-only stack picker + inventory (Phase 5.1)
+│   ├── monitor_screen.py    # Health polling worker + event log (Phase 5.2)
+│   ├── deploy_screen.py     # ConfigBuilder-driven deploy form (Phase 5.3)
+│   ├── deploy_run_screen.py # ProgressEvent timeline + userdata stream (Phase 5.3)
+│   ├── logs_screen.py       # Instance/container log stream picker (Phase 5.4)
 │   └── brutalist.tcss       # Shared Textual presentation ($gm-* tokens)
 └── progress_events.py       # NEW shared contract
 ```
@@ -463,7 +558,8 @@ geusemaker/cli/
 | Layer | Approach |
 |-------|----------|
 | Stage glyphs | Pure functions → string snapshots |
-| ProgressEvent | Recording callback in unit tests (moto/stubs) |
+| Shared configuration | Wizard and Textual adapters build identical `DeploymentConfig` fixtures |
+| ProgressEvent | Recording callback in runner and tier-orchestrator tests (moto/stubs) |
 | Dialogs | Existing `scripted_inputs` / non-TTY fallbacks |
 | Textual | Optional: `textual` pilot/`App.run_test()` behind `[tui]` marker; skip if extra missing |
 | Regression | Full `./scripts/test.sh` without Textual installed must pass |
@@ -490,12 +586,15 @@ geusemaker/cli/
 - [x] Base install remains wizard-only; `[tui]` enables the full-screen app
 - [x] Services/orchestration remain free of Textual/questionary imports
 - [x] Non-interactive JSON/YAML paths retain their one-document stdout contract
-- [x] `geusemaker tui`, `deploy --tui`, `monitor start --tui`, and `GEUSEMAKER_UI=tui`
-- [ ] Replace placeholder mode summaries with AWS-backed worker-driven live screens
-- [ ] Deploy screen streams ProgressEvent timeline + userdata log concurrently (§8.4.1)
-- [ ] Instance log tailing via `SSMService.tail_file()` with named log catalog (§8.4.2)
-- [ ] Docker log following via `SSMService.follow_container_logs()` + CLI `--follow` parity (§8.4.3)
-- [ ] Add optional Textual pilot tests when the `[tui]` extra is installed
+- [x] Routing for `geusemaker tui`, `deploy --tui`, `monitor start --tui`, and command-scoped `GEUSEMAKER_UI=tui`
+- [x] Extract a UI-neutral `DeploymentDraft` / `ConfigBuilder` shared by wizard and Textual forms
+- [x] Add wizard YAML export and TUI YAML import through the shared configuration layer
+- [x] Propagate `ProgressEvent` callbacks through tier orchestrators (granular stages + error events, per-tier recording tests)
+- [x] Replace placeholder mode summaries with AWS-backed worker-driven live screens
+- [x] Deploy screen streams ProgressEvent timeline + userdata log concurrently (§8.4.1)
+- [x] Instance log tailing via `SSMService.tail_file()` with named log catalog (§8.4.2)
+- [x] Docker log following via `SSMService.follow_container_logs()` + CLI `--follow` parity (§8.4.3)
+- [x] Add optional Textual pilot tests when the `[tui]` extra is installed (21 tests under tests/unit/test_cli/test_tui/, `pytest.importorskip` guarded)
 
 ---
 
@@ -509,9 +608,13 @@ geusemaker/cli/
 
 ---
 
-## 15. Suggested first implementation PR
+## 15. Suggested next implementation PRs
 
-1. Phase 0 dependency bumps + `[tui]` extra (no behavior change).  
-2. Phase 1 branding: palette + `STAGE_GLYPHS` + wire 3–4 stages in interactive deploy.  
-3. Follow-up PR: ProgressEvent extraction.  
-4. Follow-up PR: Textual Monitor MVP.
+1. Extract `DeploymentDraft` / `ConfigBuilder` from `InteractiveFlow`; add shared
+   conditional-validation fixtures and YAML round-trip tests.
+2. Propagate `ProgressEvent` callbacks through Tier 1/2/3 and assert complete,
+   tier-specific event sequences without Rich or Textual.
+3. Implement the disk-only Inspect screen and optional Textual pilot tests.
+4. Implement the Monitor worker and cancellation contract.
+5. Build the Textual deploy form on the shared configuration layer, then connect
+   it to `DeploymentRunner` and concurrent userdata streaming.
