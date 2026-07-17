@@ -195,9 +195,9 @@ class SpotAutomationService(BaseService):
         event_rule_names: list[str],
     ) -> None:
         """Fail unless the production Spot protection control plane is ready."""
-        groups = self._autoscaling.describe_auto_scaling_groups(
-            AutoScalingGroupNames=[asg_name]
-        ).get("AutoScalingGroups", [])
+        groups = self._autoscaling.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name]).get(
+            "AutoScalingGroups", []
+        )
         if not groups:
             raise RuntimeError(f"Auto Scaling group {asg_name} was not found during protection verification")
         group = groups[0]
@@ -455,7 +455,7 @@ class SpotAutomationService(BaseService):
     @staticmethod
     def _coordinator_zip() -> bytes:
         """Build the small, dependency-free event coordinator Lambda package."""
-        source = '''import json, os, time, boto3
+        source = """import json, os, time, boto3
 ec2=boto3.client("ec2"); ssm=boto3.client("ssm"); logs=boto3.client("logs")
 def emit(record):
  try: logs.create_log_stream(logGroupName=os.environ["LOG_GROUP"],logStreamName="coordinator")
@@ -471,7 +471,7 @@ def handler(event, context):
   try: ssm.send_command(InstanceIds=[iid],DocumentName="AWS-RunShellScript",Parameters={"commands":["sudo systemctl start geusemaker-spot-drain.service"]})
   except Exception as exc: emit({"drain_error":str(exc),"instance_id":iid})
  return {"handled":iid}
-'''
+"""
         output = io.BytesIO()
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("index.py", source)

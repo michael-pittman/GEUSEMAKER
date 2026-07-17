@@ -81,9 +81,11 @@ class PostDeploymentValidator:
     async def _check_instance_status(self, instance_id: str) -> ValidationCheck:
         """Validate EC2 instance/system status checks."""
         try:
-            response = self._ec2.describe_instance_status(  # type: ignore[attr-defined]
-                InstanceIds=[instance_id],
-                IncludeAllInstances=True,
+            response = await asyncio.to_thread(
+                lambda: self._ec2.describe_instance_status(  # type: ignore[attr-defined]
+                    InstanceIds=[instance_id],
+                    IncludeAllInstances=True,
+                )
             )
         except (ClientError, BotoCoreError) as exc:
             return ValidationCheck(

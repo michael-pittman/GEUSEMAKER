@@ -15,6 +15,7 @@ from geusemaker.models.deployment import (
     STATE_SCHEMA_VERSION,
     CostTracking,
     DeploymentConfig,
+    DeploymentSnapshot,
     DeploymentState,
     RollbackRecord,
 )
@@ -65,6 +66,7 @@ from geusemaker.models.validation import (
 
 __all__ = [
     "DeploymentConfig",
+    "DeploymentSnapshot",
     "DeploymentState",
     "RollbackRecord",
     "STATE_SCHEMA_VERSION",

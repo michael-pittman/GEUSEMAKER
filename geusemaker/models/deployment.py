@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -145,6 +145,37 @@ class DeploymentConfig(BaseModel):
         return {"dev": "development", "automation": "production", "gpu": "global"}[self.tier]
 
 
+class DeploymentSnapshot(BaseModel):
+    """Point-in-time snapshot of the mutable parts of a deployment needed for rollback.
+
+    This is intentionally NON-recursive: it captures only the fields rollback restores
+    (``config`` and ``container_images``) plus light metadata. It never nests prior
+    snapshots (``previous_states``/``last_healthy_state``/``rollback_history``).
+
+    ``extra="ignore"`` makes this backward compatible with legacy persisted state: older
+    files stored a full ``DeploymentState.model_dump()`` as each snapshot, so loading them
+    into this model simply drops the surplus keys while recovering ``config`` and
+    ``container_images``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    config: DeploymentConfig
+    container_images: dict[str, str] = Field(default_factory=dict)
+    status: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @classmethod
+    def from_state(cls, state: DeploymentState) -> DeploymentSnapshot:
+        """Build a snapshot from a deployment state (deterministic, non-recursive)."""
+        return cls(
+            config=state.config,
+            container_images=dict(state.container_images),
+            status=state.status,
+            created_at=state.updated_at,
+        )
+
+
 class RollbackRecord(BaseModel):
     """Record of a rollback operation."""
 
@@ -247,8 +278,8 @@ class DeploymentState(BaseModel):
     )
 
     rollback_history: list[RollbackRecord] = Field(default_factory=list)
-    last_healthy_state: dict[str, Any] | None = None
-    previous_states: list[dict[str, Any]] = Field(default_factory=list)
+    last_healthy_state: DeploymentSnapshot | None = None
+    previous_states: list[DeploymentSnapshot] = Field(default_factory=list)
     container_images: dict[str, str] = Field(default_factory=dict)
     resource_provenance: dict[str, str] = Field(default_factory=dict)
     migration_history: list[str] = Field(default_factory=list)

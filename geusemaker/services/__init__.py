@@ -35,7 +35,6 @@ from geusemaker.services.health import (
 from geusemaker.services.iam import IAMService
 from geusemaker.services.instance_resolver import InstanceResolver, ResolvedInstance
 from geusemaker.services.pricing import PricingService
-from geusemaker.services.rollback import RollbackService
 from geusemaker.services.sg import SecurityGroupService
 from geusemaker.services.spot_automation import SpotAutomationService
 from geusemaker.services.ssm import SSMService
@@ -43,7 +42,6 @@ from geusemaker.services.state_recovery import StateRecoveryService
 from geusemaker.services.update import (
     ContainerUpdater,
     InstanceUpdater,
-    UpdateOrchestrator,
 )
 from geusemaker.services.vpc import VPCService
 
@@ -67,10 +65,8 @@ __all__ = [
     "SSMService",
     "StateRecoveryService",
     "VPCService",
-    "UpdateOrchestrator",
     "InstanceUpdater",
     "ContainerUpdater",
-    "RollbackService",
     "BackupService",
     "DestructionService",
     "OrphanDetector",

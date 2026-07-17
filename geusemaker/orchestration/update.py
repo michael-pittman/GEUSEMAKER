@@ -6,7 +6,7 @@ import asyncio
 from time import monotonic
 
 from geusemaker.infra import AWSClientFactory, StateManager
-from geusemaker.models import DeploymentState
+from geusemaker.models import DeploymentSnapshot, DeploymentState
 from geusemaker.models.update import UpdateRequest, UpdateResult
 from geusemaker.services.update.containers import ContainerUpdater
 from geusemaker.services.update.instance import InstanceUpdater
@@ -41,8 +41,9 @@ class UpdateOrchestrator:
             raise ValueError("; ".join(errors))
 
         previous_state = deployment.model_dump()
-        deployment.last_healthy_state = previous_state
-        deployment.previous_states.insert(0, previous_state)
+        snapshot = DeploymentSnapshot.from_state(deployment)
+        deployment.last_healthy_state = snapshot
+        deployment.previous_states.insert(0, snapshot)
         deployment.previous_states = deployment.previous_states[:5]
         deployment.status = "updating"
         asyncio.run(self.state_manager.save_deployment(deployment))

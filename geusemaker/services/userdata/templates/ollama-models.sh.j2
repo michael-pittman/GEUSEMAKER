@@ -57,7 +57,7 @@
         fi
     fi
 
-{% if tier == "gpu" %}
+{% if workload == "gpu" %}
     # Pull GPU-optimized models for GPU deployments
     log_message "GPU deployment detected - pulling GPU-optimized models"
 
@@ -98,7 +98,7 @@
         log_message "# or: docker exec ollama ollama pull nomic-embed-text"
     fi
     log_message ""
-{% if tier == "gpu" %}
+{% if workload == "gpu" %}
     log_message "# GPU-accelerated multimodal model:"
     log_message "curl http://localhost:{{ ollama_port }}/api/chat -d '{"
     log_message '  "model": "qwen3-omni-30b-a3b:q4_k_s",'

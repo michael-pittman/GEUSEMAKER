@@ -67,8 +67,7 @@ class FakeEC2:
         """Mock spot placement scores API."""
         self.last_placement_scores_kwargs = {"RegionNames": RegionNames}
         scores: list[dict[str, object]] = [
-            {"AvailabilityZone": az, "Score": score}
-            for az, score in self.placement_scores.items()
+            {"AvailabilityZone": az, "Score": score} for az, score in self.placement_scores.items()
         ]
         scores += [
             {"AvailabilityZoneId": zone_id, "Score": score}
@@ -226,7 +225,10 @@ def test_multi_az_checking_uses_secondary_when_primary_unavailable() -> None:
             ]
 
         def get_on_demand_price(
-            self, instance_type: str, region: str, operating_system: str = "Linux"  # noqa: ARG002
+            self,
+            instance_type: str,
+            region: str,
+            operating_system: str = "Linux",  # noqa: ARG002
         ) -> OnDemandPrice:
             return OnDemandPrice(
                 instance_type=instance_type,

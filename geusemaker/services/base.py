@@ -15,6 +15,14 @@ from geusemaker.infra import AWSClientFactory
 _T = TypeVar("_T")
 
 
+class AWSError(RuntimeError):
+    """AWS call failure that carries the botocore error code when available."""
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
 class BaseService:
     """Base class for AWS-backed services."""
 
@@ -31,7 +39,10 @@ class BaseService:
         try:
             return fn()
         except (ClientError, BotoCoreError) as exc:
-            raise RuntimeError(f"AWS call failed: {exc}") from exc
+            code = None
+            if isinstance(exc, ClientError):
+                code = exc.response.get("Error", {}).get("Code")
+            raise AWSError(f"AWS call failed: {exc}", code=code) from exc
 
 
-__all__ = ["BaseService"]
+__all__ = ["AWSError", "BaseService"]

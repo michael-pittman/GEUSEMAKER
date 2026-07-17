@@ -17,13 +17,19 @@ from geusemaker.cli.output import is_machine_output
 from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
-from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3Orchestrator
-from geusemaker.services.acm import ACMService
+from geusemaker.orchestration import (
+    CertificateProvisioner,
+    Tier1Orchestrator,
+    Tier2Orchestrator,
+    Tier3Orchestrator,
+    certificate_required,
+    normalize_deployment_config,
+)
+from geusemaker.orchestration.normalization import NORMALIZED_FIELDS
 from geusemaker.services.compute.spot import SpotSelectionService
 from geusemaker.services.cost import BudgetService, CostEstimator
 from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.pricing import PricingService
-from geusemaker.services.route53 import Route53Service
 from geusemaker.services.ssm import SSMService
 from geusemaker.services.validation import PreDeploymentValidator
 
@@ -139,26 +145,18 @@ class DeploymentRunner:
     ) -> DeploymentState:
         """Validate configuration and run the Tier1 orchestrator."""
         emit = on_progress or print_stage
-        # Normalize tier-related feature flags
-        updates: dict[str, object] = {}
-        if config.tier == "automation" and not config.enable_alb:
-            updates["enable_alb"] = True
-        if config.tier == "gpu":
-            if not config.enable_alb:
-                updates["enable_alb"] = True
-            if not config.enable_cdn:
-                updates["enable_cdn"] = True
-        # The 15-minute default rollback timeout cannot fit a CDN deployment:
-        # ACM issuance + instance + ALB alone take ~15 minutes before CloudFront's
-        # 15-30 minute rollout begins, so the default would abort every healthy
-        # Tier 3 deploy. Scale it up unless the user chose a larger value.
-        if (config.enable_cdn or config.tier == "gpu") and config.rollback_timeout_minutes <= 15:
-            updates["rollback_timeout_minutes"] = 60
-        if updates:
-            config = config.model_copy(update=updates)
+        # Normalize tier-related feature flags (pure; no AWS side effects).
+        normalized = normalize_deployment_config(config)
+        if normalized != config:
+            changed = {
+                field: getattr(normalized, field)
+                for field in NORMALIZED_FIELDS
+                if getattr(normalized, field) != getattr(config, field)
+            }
+            config = normalized
             console.print(
                 f"{EMOJI['info']} Adjusted config for tier '{config.tier}': "
-                f"{', '.join(f'{k}={v}' for k, v in updates.items())}",
+                f"{', '.join(f'{k}={v}' for k, v in changed.items())}",
                 verbosity="info",
             )
 
@@ -207,53 +205,17 @@ class DeploymentRunner:
                 raise DeploymentValidationFailed(report)
 
         # Tier 2/3 HTTPS: auto-provision an ALB ACM cert via Route 53 when requested.
+        # AWS orchestration lives in CertificateProvisioner; the runner only renders.
         if config.enable_https and config.enable_alb and not config.alb_certificate_arn:
-            if config.alb_domain_name and config.alb_hosted_zone_id:
+            if certificate_required(config):
                 if progress:
                     try:
                         progress.advance("Provisioning ACM certificate")
                     except AttributeError:
                         pass
 
-                console.print(
-                    f"{EMOJI['info']} Requesting ACM certificate for {config.alb_domain_name} (DNS validation)...",
-                    verbosity="info",
-                )
-                acm = ACMService(self.client_factory, region=config.region)
-                r53 = Route53Service(self.client_factory)
-                tags = [
-                    {"Key": "Name", "Value": f"{config.stack_name}-alb-cert"},
-                    {"Key": "Stack", "Value": config.stack_name},
-                    {"Key": "Tier", "Value": config.tier},
-                    {"Key": "ManagedBy", "Value": "GeuseMaker"},
-                ]
-                cert_arn = acm.request_dns_certificate(config.alb_domain_name, tags=tags)
-
-                console.print(
-                    f"{EMOJI['info']} Waiting for ACM DNS validation record to be generated...",
-                    verbosity="info",
-                )
-                rr_name, rr_type, rr_value = acm.wait_for_dns_validation_record(
-                    cert_arn,
-                    timeout_seconds=300,
-                    poll_interval_seconds=5.0,
-                )
-                change_id = r53.upsert_record(
-                    hosted_zone_id=config.alb_hosted_zone_id,
-                    name=rr_name,
-                    record_type=rr_type,
-                    value=rr_value,
-                    ttl=60,
-                )
-                if change_id:
-                    r53.wait_for_change(change_id)
-
-                console.print(
-                    f"{EMOJI['info']} Waiting for ACM certificate to be issued...",
-                    verbosity="info",
-                )
-                acm.wait_for_issued(cert_arn, timeout_seconds=900)
-
+                provisioner = CertificateProvisioner(self.client_factory, region=config.region)
+                cert_arn = provisioner.provision(config, on_progress=emit)
                 config = config.model_copy(update={"alb_certificate_arn": cert_arn})
                 console.print(
                     f"{EMOJI['check']} ACM certificate issued: {cert_arn}",

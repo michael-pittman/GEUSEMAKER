@@ -3,22 +3,32 @@
 from __future__ import annotations
 
 import asyncio
-import gzip
+import logging
 import secrets
 import string
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
-from geusemaker.cli import console
-from geusemaker.cli.branding import EMOJI
-from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent, ProgressLevel, Stage
 from geusemaker.infra import AWSClientFactory, StateManager
-from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState, VPCInfo
+from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.models.compute import InstanceSelection, SavingsComparison
-from geusemaker.models.userdata import UserDataConfig
 from geusemaker.orchestration.errors import OrchestrationError
+from geusemaker.orchestration.stages import (
+    build_block_device_mappings,
+    build_final_state,
+    build_partial_state,
+    build_userdata_config,
+    compress_userdata,
+    create_storage,
+    detect_root_device,
+    launch_instance,
+    resolve_ami,
+    resolve_networking,
+    resolve_security_group,
+)
+from geusemaker.progress import ProgressCallback, ProgressEvent, ProgressLevel, Stage
 from geusemaker.services.compute.spot import SpotSelectionService
 from geusemaker.services.destruction import DestructionService
 from geusemaker.services.ec2 import EC2Service
@@ -29,6 +39,8 @@ from geusemaker.services.sg import SecurityGroupService
 from geusemaker.services.spot_automation import SpotAutomationService
 from geusemaker.services.userdata import UserDataGenerator
 from geusemaker.services.vpc import VPCService
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Tier1Orchestrator:
@@ -97,17 +109,15 @@ class Tier1Orchestrator:
     def _log_selection(self, selection: InstanceSelection) -> None:
         """Log compute selection details."""
         if selection.is_spot:
-            console.print(
-                f"{EMOJI['money']} Using spot in {selection.availability_zone or 'best AZ'} at "
+            LOGGER.info(
+                f"Using spot in {selection.availability_zone or 'best AZ'} at "
                 f"${selection.price_per_hour:.4f}/hr "
-                f"(on-demand ${selection.savings_vs_on_demand.on_demand_hourly:.4f}/hr)",
-                verbosity="info",
+                f"(on-demand ${selection.savings_vs_on_demand.on_demand_hourly:.4f}/hr)"
             )
         else:
-            console.print(
-                f"{EMOJI['info']} Using on-demand at ${selection.price_per_hour:.4f}/hr "
-                f"(reason: {selection.fallback_reason or selection.selection_reason})",
-                verbosity="info",
+            LOGGER.info(
+                f"Using on-demand at ${selection.price_per_hour:.4f}/hr "
+                f"(reason: {selection.fallback_reason or selection.selection_reason})"
             )
 
     def _select_instance(self, config: DeploymentConfig) -> InstanceSelection:
@@ -174,40 +184,21 @@ class Tier1Orchestrator:
 
             # If partial state exists and rollback is enabled, clean up resources
             if partial_state and enable_rollback:
-                console.print(
-                    f"\n{EMOJI['error']} Deployment failed: {exc}",
-                    verbosity="error",
-                )
-                console.print(
-                    f"{EMOJI['warning']} Initiating automatic cleanup of partial deployment...",
-                    verbosity="warning",
-                )
+                LOGGER.error(f"Deployment failed: {exc}")
+                LOGGER.warning("Initiating automatic cleanup of partial deployment...")
                 try:
                     self._cleanup_partial_deployment(partial_state)
-                    console.print(
-                        f"{EMOJI['check']} Cleanup completed successfully. Partial resources have been cleaned up.",
-                        verbosity="info",
-                    )
+                    LOGGER.info("Cleanup completed successfully. Partial resources have been cleaned up.")
                 except Exception as rollback_exc:  # noqa: BLE001
-                    console.print(
-                        f"{EMOJI['error']} Rollback failed: {rollback_exc}",
-                        verbosity="error",
-                    )
-                    console.print(
-                        f"{EMOJI['warning']} Manual cleanup may be required. Check AWS Console for orphaned resources tagged with Stack: {config.stack_name}",
-                        verbosity="warning",
+                    LOGGER.error(f"Rollback failed: {rollback_exc}")
+                    LOGGER.warning(
+                        f"Manual cleanup may be required. Check AWS Console for orphaned resources tagged with Stack: {config.stack_name}"
                     )
 
             # If no rollback or rollback disabled, just save failed state
             elif partial_state:
-                console.print(
-                    f"\n{EMOJI['error']} Deployment failed: {exc}",
-                    verbosity="error",
-                )
-                console.print(
-                    f"{EMOJI['warning']} Rollback disabled. Saving failed state for manual recovery.",
-                    verbosity="warning",
-                )
+                LOGGER.error(f"Deployment failed: {exc}")
+                LOGGER.warning("Rollback disabled. Saving failed state for manual recovery.")
                 self._save_failed_state(partial_state, exc)
 
             # Re-raise original error with context
@@ -236,7 +227,7 @@ class Tier1Orchestrator:
         )
 
         def progress_callback(msg: str) -> None:
-            console.print(f"  {msg}", verbosity="info")
+            LOGGER.info(msg)
 
         result = destruction_service.destroy(partial_state, dry_run=False, progress_callback=progress_callback)
 
@@ -268,9 +259,8 @@ class Tier1Orchestrator:
 
         asyncio.run(self.state_manager.save_deployment(failed_state))
 
-        console.print(
-            f"{EMOJI['info']} Failed state saved. Use 'geusemaker destroy {partial_state.stack_name}' to clean up orphaned resources.",
-            verbosity="info",
+        LOGGER.info(
+            f"Failed state saved. Use 'geusemaker destroy {partial_state.stack_name}' to clean up orphaned resources."
         )
 
     def _deploy_impl(self, config: DeploymentConfig) -> DeploymentState:
@@ -382,143 +372,16 @@ class Tier1Orchestrator:
         return final_state
 
     def _setup_networking(self, config: DeploymentConfig, selection: InstanceSelection) -> dict[str, Any]:
-        """
-        Setup VPC and select subnets for deployment.
-
-        Args:
-            config: Deployment configuration
-            selection: Instance selection to align AZ choice
-
-        Returns:
-            Dict containing VPC info and selected subnet IDs
-        """
-        # Create or configure VPC
-        if config.vpc_id:
-            vpc = self.vpc_service.configure_existing_vpc(
-                config.vpc_id,
-                name=config.stack_name,
-                deployment=config.stack_name,
-                tier=config.tier,
-                attach_internet_gateway=config.attach_internet_gateway,
-            )
-        else:
-            vpc = self.vpc_service.create_vpc_with_subnets(
-                "10.0.0.0/16",
-                config.stack_name,
-                deployment=config.stack_name,
-                tier=config.tier,
-            )
-
-        # Extract subnet IDs
-        public_subnet_ids = config.public_subnet_ids or [subnet.subnet_id for subnet in vpc.public_subnets]
-        private_subnet_ids = config.private_subnet_ids or [subnet.subnet_id for subnet in vpc.private_subnets]
-
-        if not public_subnet_ids:
-            raise OrchestrationError(f"No public subnets available in VPC {vpc.vpc_id}")
-
-        subnet_lookup = {subnet.subnet_id: subnet for subnet in (vpc.public_subnets + vpc.private_subnets)}
-
-        # Select public subnet for EC2 instance
-        if config.subnet_id:
-            if config.subnet_id not in public_subnet_ids:
-                raise OrchestrationError(
-                    f"Configured subnet {config.subnet_id} is not a public subnet in VPC {vpc.vpc_id}",
-                )
-            chosen_public_subnet_id = config.subnet_id
-        else:
-            chosen_public_subnet_id = public_subnet_ids[0]
-            if selection.availability_zone:
-                az_match = next(
-                    (
-                        subnet.subnet_id
-                        for subnet in vpc.public_subnets
-                        if subnet.availability_zone == selection.availability_zone
-                    ),
-                    None,
-                )
-                if az_match:
-                    chosen_public_subnet_id = az_match
-                    console.print(
-                        f"{EMOJI['info']} Placing compute in {selection.availability_zone} to match spot pricing.",
-                        verbosity="info",
-                    )
-                else:
-                    fallback_subnet = subnet_lookup.get(chosen_public_subnet_id)
-                    fallback_az = fallback_subnet.availability_zone if fallback_subnet else "unknown"
-                    console.print(
-                        f"{EMOJI['warning']} No public subnet in {selection.availability_zone} where spot "
-                        f"pricing/capacity was validated; launching in {fallback_az} instead. "
-                        "Actual spot price and capacity may differ.",
-                        verbosity="warning",
-                    )
-
-        # Select storage subnet for EFS mount target
-        # CRITICAL: EFS mount targets must be in same subnet/AZ as EC2 instance for DNS resolution
-        if config.storage_subnet_id:
-            chosen_storage_subnet_id = config.storage_subnet_id
-            if chosen_storage_subnet_id not in (public_subnet_ids + private_subnet_ids):
-                raise OrchestrationError(
-                    f"Configured storage subnet {chosen_storage_subnet_id} is not part of VPC {vpc.vpc_id}",
-                )
-        else:
-            # Default: use same subnet as EC2 instance to guarantee same-AZ placement
-            chosen_storage_subnet_id = chosen_public_subnet_id
-
-        chosen_public_subnet = subnet_lookup.get(chosen_public_subnet_id)
-        return {
-            "vpc": vpc,
-            "public_subnet_ids": public_subnet_ids,
-            "private_subnet_ids": private_subnet_ids,
-            "chosen_public_subnet_id": chosen_public_subnet_id,
-            "chosen_storage_subnet_id": chosen_storage_subnet_id,
-            "chosen_public_subnet_az": chosen_public_subnet.availability_zone if chosen_public_subnet else None,
-        }
+        """Setup VPC and select subnets for deployment (delegates to stages.networking)."""
+        return resolve_networking(self.vpc_service, config, selection)
 
     def _create_security_group(
         self,
         config: DeploymentConfig,
         vpc_info: dict[str, Any],
     ) -> tuple[str, str]:
-        """
-        Create or reuse security group.
-
-        Args:
-            config: Deployment configuration
-            vpc_info: VPC information from _setup_networking()
-
-        Returns:
-            Tuple of (security_group_id, provenance)
-        """
-        if config.security_group_id:
-            # When reusing a security group with HTTPS enabled, ensure port 443 is open
-            if config.enable_https:
-                port_added = self.sg_service.ensure_https_port(config.security_group_id)
-                if port_added:
-                    console.print("✓ HTTPS port 443 added to security group", style="green")
-                else:
-                    console.print("✓ Port 443 (HTTPS) already open", style="green")
-            return config.security_group_id, "reused"
-
-        vpc: VPCInfo = vpc_info["vpc"]
-        # Service containers bind to 127.0.0.1 and all traffic flows through host
-        # NGINX on 80/443, so no service ports (5678 etc.) are opened externally.
-        ingress = [
-            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-            {"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-            {"IpProtocol": "tcp", "FromPort": 2049, "ToPort": 2049, "IpRanges": [{"CidrIp": vpc.cidr_block}]},
-        ]
-        # Add HTTPS port when HTTPS is enabled
-        if config.enable_https:
-            ingress.append(
-                {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-            )
-        sg_resp = self.sg_service.create_security_group(
-            name=f"{config.stack_name}-sg",
-            description="GeuseMaker dev SG",
-            vpc_id=vpc.vpc_id,
-            ingress_rules=ingress,
-        )
-        return sg_resp["group_id"], "created"
+        """Create or reuse security group (delegates to stages.networking)."""
+        return resolve_security_group(self.sg_service, config, vpc_info)
 
     def _create_storage(
         self,
@@ -526,47 +389,8 @@ class Tier1Orchestrator:
         vpc_info: dict[str, Any],
         sg_id: str,
     ) -> tuple[str, str, str]:
-        """
-        Create EFS filesystem and mount target.
-
-        Args:
-            config: Deployment configuration
-            vpc_info: VPC information from _setup_networking()
-            sg_id: Security group ID
-
-        Returns:
-            Tuple of (efs_id, mount_target_id, mount_target_ip)
-        """
-        # Create EFS filesystem
-        efs = self.efs_service.create_filesystem(tags=[{"Key": "Name", "Value": config.stack_name}])
-        efs_id = efs["FileSystemId"]
-
-        # Wait for EFS to transition from "creating" to "available" state
-        self.efs_service.wait_for_available(efs_id)
-
-        # A production Spot replacement may land in any configured public AZ. EFS
-        # requires one mount target per AZ, so provision that coverage up front.
-        chosen_storage_subnet_id = vpc_info["chosen_storage_subnet_id"]
-        mount_subnet_ids = [chosen_storage_subnet_id]
-        if config.tier in {"automation", "gpu"} and config.use_spot:
-            seen_azs: set[str] = set()
-            mount_subnet_ids = []
-            for subnet in vpc_info["vpc"].public_subnets:
-                if subnet.availability_zone not in seen_azs:
-                    mount_subnet_ids.append(subnet.subnet_id)
-                    seen_azs.add(subnet.availability_zone)
-
-        mount_target_ids = [
-            self.efs_service.create_mount_target(fs_id=efs_id, subnet_id=subnet_id, security_groups=[sg_id])
-            for subnet_id in mount_subnet_ids
-        ]
-        for mount_target_id in mount_target_ids:
-            self.efs_service.wait_for_mount_target_available(mount_target_id)
-        mt_id = mount_target_ids[0]
-        mt_ip = self.efs_service.get_mount_target_ip(mt_id)
-        vpc_info["efs_mount_target_ids"] = mount_target_ids
-
-        return efs_id, mt_id, mt_ip
+        """Create EFS filesystem and mount target (delegates to stages.storage)."""
+        return create_storage(self.efs_service, config, vpc_info, sg_id)
 
     def _save_partial_state(
         self,
@@ -593,51 +417,7 @@ class Tier1Orchestrator:
             mt_id: EFS mount target ID
             mt_ip: EFS mount target IP address
         """
-        vpc: VPCInfo = vpc_info["vpc"]
-        public_subnet_ids = vpc_info["public_subnet_ids"]
-        private_subnet_ids = vpc_info["private_subnet_ids"]
-        chosen_storage_subnet_id = vpc_info["chosen_storage_subnet_id"]
-
-        hourly_price = selection.price_per_hour
-        monthly_price = hourly_price * Decimal("730")
-
-        partial_state = DeploymentState(
-            stack_name=config.stack_name,
-            status="creating",
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-            vpc_id=vpc.vpc_id,
-            subnet_ids=public_subnet_ids + private_subnet_ids,
-            storage_subnet_id=chosen_storage_subnet_id,
-            security_group_id=sg_id,
-            efs_id=efs_id,
-            efs_mount_target_id=mt_id,
-            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
-            efs_mount_target_ip=mt_ip,
-            instance_id="",  # Not created yet
-            keypair_name=config.keypair_name or "",
-            public_ip=None,
-            private_ip="",
-            n8n_url="",
-            cost=CostTracking(
-                instance_type=config.instance_type,
-                is_spot=selection.is_spot,
-                spot_price_per_hour=hourly_price if selection.is_spot else None,
-                on_demand_price_per_hour=selection.savings_vs_on_demand.on_demand_hourly,
-                estimated_monthly_cost=monthly_price,
-                budget_limit=config.budget_limit,
-            ),
-            config=config,
-            resource_provenance={
-                "vpc": "created" if vpc.created_by_geusemaker else "reused",
-                "subnets": "created" if vpc.created_by_geusemaker else "reused",
-                "security_group": sg_provenance,
-                "efs": "created",
-                "efs_mount_target": "created",
-                "instance": "pending",
-                "key_pair": "reused" if config.keypair_name else "created",
-            },
-        )
+        partial_state = build_partial_state(config, vpc_info, sg_id, sg_provenance, efs_id, mt_id, mt_ip, selection)
         asyncio.run(self.state_manager.save_deployment(partial_state))
 
     def _create_iam_resources(self, config: DeploymentConfig) -> dict[str, str]:
@@ -660,16 +440,16 @@ class Tier1Orchestrator:
             {"Key": "ManagedBy", "Value": "GeuseMaker"},
         ]
 
-        console.print(f"{EMOJI['info']} Creating IAM role for EFS mount: {role_name}", verbosity="info")
+        LOGGER.info(f"Creating IAM role for EFS mount: {role_name}")
         role_arn = self.iam_service.create_efs_mount_role(role_name, tags)
 
-        console.print(f"{EMOJI['info']} Creating IAM instance profile: {profile_name}", verbosity="info")
+        LOGGER.info(f"Creating IAM instance profile: {profile_name}")
         profile_arn = self.iam_service.create_instance_profile(profile_name, tags)
 
-        console.print(f"{EMOJI['info']} Attaching role to instance profile", verbosity="info")
+        LOGGER.info("Attaching role to instance profile")
         self.iam_service.attach_role_to_profile(profile_name, role_name)
 
-        console.print(f"{EMOJI['info']} Waiting for instance profile with role attachment", verbosity="info")
+        LOGGER.info("Waiting for instance profile with role attachment")
         self.iam_service.wait_for_instance_profile(profile_name, role_name)
 
         return {
@@ -699,57 +479,16 @@ class Tier1Orchestrator:
             Tuple of (compressed_userdata, postgres_password)
         """
         postgres_password = self._generate_postgres_password()
-        efs_dns = f"{efs_id}.efs.{self.region}.amazonaws.com"
-
-        # UserData's enable_https flag controls:
-        # - Tier 1 (dev): self-signed certificate + NGINX reverse proxy
-        # - Service runtime flags (e.g. n8n secure cookies/protocol)
-        # For Tier 2/3, HTTPS is terminated at ALB/CloudFront, so only enable it
-        # when the external endpoint will actually be HTTPS.
-        if config.tier == "dev":
-            userdata_enable_https = bool(config.enable_https and config.tier1_use_self_signed)
-        elif config.enable_cdn:
-            userdata_enable_https = bool(config.enable_https)
-        elif config.enable_alb:
-            userdata_enable_https = bool(config.enable_https and config.alb_certificate_arn is not None)
-        else:
-            userdata_enable_https = False
-
-        # Configure n8n external URL hints so it generates webhooks with the right host.
-        # For Tier 2/3, we can know the intended domain up front (Route 53 hosted zone selection).
-        # For Tier 1, the public IP is only known after launch, so leave unset here.
-        n8n_external_host: str | None = None
-        n8n_external_protocol: Literal["http", "https"] | None = None
-        n8n_proxy_hops: int | None = None
-        if config.tier in {"automation", "gpu"} and config.alb_domain_name:
-            n8n_external_host = config.alb_domain_name
-            n8n_external_protocol = "https" if userdata_enable_https else "http"
-            # Tier 2: ALB only (1 hop). Tier 3: CloudFront -> ALB (2 hops).
-            n8n_proxy_hops = 2 if config.enable_cdn else 1
-
-        userdata_config = UserDataConfig(
-            efs_id=efs_id,
-            efs_dns=efs_dns,
-            efs_mount_target_ip=mt_ip,
-            tier=config.tier,
-            stack_name=config.stack_name,
-            region=self.region,
-            enable_https=userdata_enable_https,
-            n8n_external_host=n8n_external_host,
-            n8n_external_protocol=n8n_external_protocol,
-            n8n_proxy_hops=n8n_proxy_hops,
-            postgres_password=postgres_password,
-            use_runtime_bundle=config.use_runtime_bundle,
-            runtime_bundle_path=config.runtime_bundle_path,
+        userdata_config = build_userdata_config(
+            config,
+            self.region,
+            efs_id,
+            mt_ip,
+            postgres_password,
             spot_protection_enabled=spot_protection_enabled,
-            spot_lease_table_name=(f"{config.stack_name}-spot-lease"[:255] if spot_protection_enabled else None),
-            spot_auto_scaling_group_name=(f"{config.stack_name}-spot-asg" if spot_protection_enabled else None),
-            spot_log_group_name=(f"/geusemaker/{config.stack_name}/spot-events" if spot_protection_enabled else None),
-            spot_launch_hook_name=(f"{config.stack_name[:42]}-launch" if spot_protection_enabled else None),
-            spot_termination_hook_name=(f"{config.stack_name[:39]}-terminate" if spot_protection_enabled else None),
         )
         userdata_script = self.userdata_generator.generate(userdata_config)
-        userdata_payload = self._compress_userdata(userdata_script)
+        userdata_payload = compress_userdata(userdata_script)
 
         return userdata_payload, postgres_password
 
@@ -776,189 +515,24 @@ class Tier1Orchestrator:
         Returns:
             Dict containing instance_id, public_ip, private_ip
         """
-        chosen_public_subnet_id = vpc_info["chosen_public_subnet_id"]
-        chosen_public_subnet_az = vpc_info.get("chosen_public_subnet_az")
+        # AMI resolution + root-device detection (delegates to stages.ami).
+        ami_id = resolve_ami(self.ec2_service, config)
+        root_device_name = detect_root_device(self.ec2_service, ami_id)
+        block_device_mappings = build_block_device_mappings(root_device_name)
 
-        # Get AMI ID (use custom if provided, otherwise auto-select)
-        if config.ami_id:
-            ami_id = config.ami_id
-            console.print(f"{EMOJI['info']} Using custom AMI: {ami_id}", verbosity="info")
-        else:
-            ami_id = self.ec2_service.get_latest_dlami(
-                os_type=config.os_type,
-                architecture=config.architecture,
-                ami_type=config.ami_type,
-                instance_type=config.instance_type,
-            )
-            console.print(f"{EMOJI['info']} Auto-selected AMI: {ami_id}", verbosity="info")
-
-        # Ensure root volume is at least the minimum size
-        min_root_gb = 75
-        try:
-            root_device_name = self.ec2_service.get_root_device_name(ami_id)
-        except Exception as exc:  # noqa: BLE001
-            root_device_name = "/dev/xvda"
-            console.print(
-                f"{EMOJI['warning']} Could not determine AMI root device; defaulting to {root_device_name}. Details: {exc}",
-                verbosity="warning",
-            )
-
-        block_device_mappings = [
-            {
-                "DeviceName": root_device_name,
-                "Ebs": {
-                    "VolumeSize": min_root_gb,
-                    "VolumeType": "gp3",
-                    "DeleteOnTermination": True,
-                    "Encrypted": True,
-                },
-            },
-        ]
-
-        if config.tier in {"automation", "gpu"} and selection.is_spot:
-            console.print(
-                f"{EMOJI['info']} Creating production Spot Auto Scaling group with Capacity Rebalancing...",
-                verbosity="info",
-            )
-            tags = {
-                "Name": config.stack_name,
-                "Stack": config.stack_name,
-                "Tier": config.tier,
-                "ManagedBy": "GeuseMaker",
-            }
-            resources = self.spot_automation_service.create(
-                stack_name=config.stack_name,
-                image_id=ami_id,
-                instance_type=config.instance_type,
-                subnet_ids=vpc_info["public_subnet_ids"],
-                security_group_ids=[sg_id],
-                instance_profile_name=iam_info["profile_name"],
-                user_data=userdata_payload,
-                block_device_mappings=block_device_mappings,
-                tags=tags,
-                key_name=config.keypair_name,
-            )
-            self.ec2_service.wait_for_running(resources.instance_id)
-            instance_desc = self.ec2_service.describe_instance(resources.instance_id)
-            return {
-                "instance_id": resources.instance_id,
-                "public_ip": instance_desc.get("PublicIpAddress"),
-                "private_ip": instance_desc.get("PrivateIpAddress", ""),
-                "spot_fallback_to_on_demand": False,
-                "launch_template_id": resources.launch_template_id,
-                "auto_scaling_group_name": resources.auto_scaling_group_name,
-                "spot_event_log_group": resources.log_group_name,
-                "spot_event_rule_names": list(resources.event_rule_names),
-                "spot_lease_table_name": resources.lease_table_name,
-                "spot_lifecycle_hook_names": list(resources.lifecycle_hook_names),
-                "spot_coordinator_function_name": resources.coordinator_function_name,
-                "spot_coordinator_role_name": resources.coordinator_role_name,
-            }
-
-        # Launch instance with IAM instance profile for EFS mount
-        # Use Name (simpler and more reliable for newly created profiles in same region)
-        # Retry logic handles IAM->EC2 propagation delay
-        max_launch_attempts = 5
-        launch_delay = 3
-        ec2_resp = None
-
-        # Spot capacity can vanish between the selection dry-run and the real launch.
-        # In that case retry the launch on-demand instead of failing the whole deploy.
-        spot_capacity_errors = (
-            "InsufficientInstanceCapacity",
-            "SpotMaxPriceTooLow",
-            "MaxSpotInstanceCountExceeded",
-            "SpotFleetRequestConfigurationInvalid",
+        # EC2 launch / Spot ASG creation + IAM-propagation retry (stages.compute_launch).
+        return launch_instance(
+            self.ec2_service,
+            self.spot_automation_service,
+            config,
+            vpc_info,
+            sg_id,
+            userdata_payload,
+            iam_info,
+            selection,
+            ami_id,
+            block_device_mappings,
         )
-        launch_as_spot = selection.is_spot
-
-        for attempt in range(max_launch_attempts):
-            try:
-                launch_kwargs: dict[str, Any] = {
-                    "ImageId": ami_id,
-                    "InstanceType": config.instance_type,
-                    "SubnetId": chosen_public_subnet_id,
-                    "SecurityGroupIds": [sg_id],
-                    "UserData": userdata_payload,
-                    "BlockDeviceMappings": block_device_mappings,
-                    "IamInstanceProfile": {"Name": iam_info["profile_name"]},
-                    "TagSpecifications": [
-                        {
-                            "ResourceType": "instance",
-                            "Tags": [
-                                {"Key": "Name", "Value": config.stack_name},
-                                {"Key": "Stack", "Value": config.stack_name},
-                                {"Key": "Tier", "Value": config.tier},
-                            ],
-                        },
-                        {
-                            "ResourceType": "network-interface",
-                            "Tags": [
-                                {"Key": "Name", "Value": f"{config.stack_name}-eni"},
-                                {"Key": "Stack", "Value": config.stack_name},
-                                {"Key": "Tier", "Value": config.tier},
-                            ],
-                        },
-                    ],
-                }
-                if launch_as_spot:
-                    launch_kwargs["InstanceMarketOptions"] = {
-                        "MarketType": "spot",
-                        "SpotOptions": {
-                            "SpotInstanceType": "one-time",
-                            "InstanceInterruptionBehavior": "terminate",
-                        },
-                    }
-                if chosen_public_subnet_az:
-                    launch_kwargs["Placement"] = {"AvailabilityZone": chosen_public_subnet_az}
-
-                ec2_resp = self.ec2_service.launch_instance(**launch_kwargs)
-                break  # Success - exit retry loop
-            except RuntimeError as e:
-                error_msg = str(e)
-                # Spot capacity vanished between selection and launch: retry on-demand
-                if launch_as_spot and any(code in error_msg for code in spot_capacity_errors):
-                    console.print(
-                        f"{EMOJI['warning']} Spot capacity no longer available at launch "
-                        f"({error_msg}). Retrying with on-demand pricing...",
-                        verbosity="warning",
-                    )
-                    launch_as_spot = False
-                    continue
-                # Check for IAM profile propagation errors
-                if "InvalidParameterValue" in error_msg or "does not exist" in error_msg:
-                    if attempt < max_launch_attempts - 1:
-                        console.print(
-                            f"{EMOJI['warning']} IAM profile not yet visible to EC2, retrying in {launch_delay}s "
-                            f"(attempt {attempt + 1}/{max_launch_attempts})...",
-                            verbosity="info",
-                        )
-                        time.sleep(launch_delay)
-                        continue
-                # Not a propagation error or last attempt - re-raise
-                raise
-
-        if ec2_resp is None:
-            raise OrchestrationError(
-                f"Failed to launch EC2 instance after {max_launch_attempts} attempts. "
-                f"IAM instance profile '{iam_info['profile_name']}' may not be propagated to EC2."
-            )
-
-        instance_id = ec2_resp["Instances"][0]["InstanceId"]
-        self.ec2_service.wait_for_running(instance_id)
-
-        instance_desc = self.ec2_service.describe_instance(instance_id)
-        public_ip = instance_desc.get("PublicIpAddress")
-        private_ip = instance_desc.get("PrivateIpAddress", "")
-
-        return {
-            "instance_id": instance_id,
-            "public_ip": public_ip,
-            "private_ip": private_ip,
-            # True when a spot selection had to launch on-demand due to a
-            # capacity error at launch time (cost/state must reflect this).
-            "spot_fallback_to_on_demand": selection.is_spot and not launch_as_spot,
-        }
 
     def _build_final_state(
         self,
@@ -991,90 +565,18 @@ class Tier1Orchestrator:
         Returns:
             Complete DeploymentState object
         """
-        vpc: VPCInfo = vpc_info["vpc"]
-        public_subnet_ids = vpc_info["public_subnet_ids"]
-        private_subnet_ids = vpc_info["private_subnet_ids"]
-        chosen_storage_subnet_id = vpc_info["chosen_storage_subnet_id"]
-
-        instance_id = instance_info["instance_id"]
-        public_ip = instance_info["public_ip"]
-        private_ip = instance_info["private_ip"]
-
-        # Direct-instance URL scheme: host NGINX only serves HTTPS on Tier 1 with the
-        # self-signed cert; otherwise (HTTPS disabled, or Tier 2/3 where the ALB/CDN
-        # terminates TLS) the instance itself serves plain HTTP on port 80.
-        # Tier 2/3 orchestrators overwrite n8n_url with the ALB/CloudFront endpoint.
-        instance_https = config.tier == "dev" and bool(config.enable_https and config.tier1_use_self_signed)
-        url_scheme = "https" if instance_https else "http"
-
-        hourly_price = selection.price_per_hour
-        monthly_price = hourly_price * Decimal("730")
-        cost = CostTracking(
-            instance_type=config.instance_type,
-            is_spot=selection.is_spot,
-            spot_price_per_hour=hourly_price if selection.is_spot else None,
-            on_demand_price_per_hour=selection.savings_vs_on_demand.on_demand_hourly,
-            estimated_monthly_cost=monthly_price,
-            budget_limit=config.budget_limit,
-            instance_start_time=datetime.now(UTC),
+        return build_final_state(
+            config,
+            vpc_info,
+            sg_id,
+            sg_provenance,
+            efs_id,
+            mt_id,
+            mt_ip,
+            iam_info,
+            instance_info,
+            selection,
         )
-        resource_provenance = {
-            "vpc": "created" if vpc.created_by_geusemaker else "reused",
-            "subnets": "created" if vpc.created_by_geusemaker else "reused",
-            "security_group": sg_provenance,
-            "efs": "created",
-            "efs_mount_target": "created",
-            "iam_role": "created",
-            "iam_instance_profile": "created",
-            "instance": "created",
-            "key_pair": "reused" if config.keypair_name else "created",
-        }
-
-        return DeploymentState(
-            stack_name=config.stack_name,
-            status="creating",
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-            vpc_id=vpc.vpc_id,
-            subnet_ids=public_subnet_ids + private_subnet_ids,
-            storage_subnet_id=chosen_storage_subnet_id,
-            security_group_id=sg_id,
-            efs_id=efs_id,
-            efs_mount_target_id=mt_id,
-            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
-            efs_mount_target_ip=mt_ip,
-            iam_role_name=iam_info["role_name"],
-            iam_role_arn=iam_info["role_arn"],
-            iam_instance_profile_name=iam_info["profile_name"],
-            iam_instance_profile_arn=iam_info["profile_arn"],
-            instance_id=instance_id,
-            launch_template_id=instance_info.get("launch_template_id"),
-            auto_scaling_group_name=instance_info.get("auto_scaling_group_name"),
-            spot_event_log_group=instance_info.get("spot_event_log_group"),
-            spot_event_rule_names=instance_info.get("spot_event_rule_names", []),
-            spot_lease_table_name=instance_info.get("spot_lease_table_name"),
-            spot_lifecycle_hook_names=instance_info.get("spot_lifecycle_hook_names", []),
-            spot_coordinator_function_name=instance_info.get("spot_coordinator_function_name"),
-            spot_coordinator_role_name=instance_info.get("spot_coordinator_role_name"),
-            keypair_name=config.keypair_name or "",
-            public_ip=public_ip,
-            private_ip=private_ip,
-            n8n_url=f"{url_scheme}://{public_ip or private_ip}" if (public_ip or private_ip) else "",
-            cost=cost,
-            config=config,
-            resource_provenance=resource_provenance,
-        )
-
-    @staticmethod
-    def _compress_userdata(userdata_script: str) -> bytes:
-        """Gzip-compress UserData to stay within AWS 16KB limit (SDK base64-encodes for us)."""
-        compressed = gzip.compress(userdata_script.encode("utf-8"))
-        limit_bytes = 16_384
-        if len(compressed) > limit_bytes:
-            raise OrchestrationError(
-                f"Compressed user data is {len(compressed)} bytes which exceeds the AWS limit of {limit_bytes} bytes.",
-            )
-        return compressed
 
 
 __all__ = ["Tier1Orchestrator"]

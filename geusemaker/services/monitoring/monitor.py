@@ -163,7 +163,7 @@ class HealthMonitor:
     async def _default_resource_sampler(self, host: str) -> dict[str, float] | None:  # noqa: ARG002
         try:
             import psutil  # type: ignore
-        except Exception:
+        except ImportError:
             return None
         return await asyncio.to_thread(
             lambda: {

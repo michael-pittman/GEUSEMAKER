@@ -43,17 +43,29 @@ def test_asg_deployment_resolves_and_refreshes_current_instance(deployment_state
     deployment_state.auto_scaling_group_name = "gm-production"
     autoscaling = MagicMock()
     autoscaling.describe_auto_scaling_groups.return_value = {
-        "AutoScalingGroups": [{"Instances": [
-            {"InstanceId": "i-pending", "LifecycleState": "Pending", "HealthStatus": "Healthy"},
-            {"InstanceId": "i-new", "LifecycleState": "InService", "HealthStatus": "Healthy"},
-        ]}]
+        "AutoScalingGroups": [
+            {
+                "Instances": [
+                    {"InstanceId": "i-pending", "LifecycleState": "Pending", "HealthStatus": "Healthy"},
+                    {"InstanceId": "i-new", "LifecycleState": "InService", "HealthStatus": "Healthy"},
+                ]
+            }
+        ]
     }
     ec2 = MagicMock()
-    ec2.describe_instances.return_value = {"Reservations": [{"Instances": [{
-        "InstanceId": "i-new",
-        "PublicIpAddress": "203.0.113.9",
-        "PrivateIpAddress": "10.0.2.8",
-    }]}]}
+    ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "InstanceId": "i-new",
+                        "PublicIpAddress": "203.0.113.9",
+                        "PrivateIpAddress": "10.0.2.8",
+                    }
+                ]
+            }
+        ]
+    }
 
     resolved = InstanceResolver(MagicMock(), autoscaling_client=autoscaling, ec2_client=ec2).resolve(deployment_state)
 
@@ -67,9 +79,9 @@ def test_asg_deployment_rejects_absence_of_healthy_instance(deployment_state: De
     deployment_state.auto_scaling_group_name = "gm-production"
     autoscaling = MagicMock()
     autoscaling.describe_auto_scaling_groups.return_value = {
-        "AutoScalingGroups": [{"Instances": [
-            {"InstanceId": "i-old", "LifecycleState": "Terminating", "HealthStatus": "Healthy"}
-        ]}]
+        "AutoScalingGroups": [
+            {"Instances": [{"InstanceId": "i-old", "LifecycleState": "Terminating", "HealthStatus": "Healthy"}]}
+        ]
     }
 
     with pytest.raises(RuntimeError, match="no healthy InService instance"):
@@ -82,10 +94,14 @@ def test_fenced_deployment_resolves_lease_owner_during_rebalance(deployment_stat
     deployment_state.spot_lease_table_name = "gm-lease"
     autoscaling = MagicMock()
     autoscaling.describe_auto_scaling_groups.return_value = {
-        "AutoScalingGroups": [{"Instances": [
-            {"InstanceId": "i-old", "LifecycleState": "InService", "HealthStatus": "Healthy"},
-            {"InstanceId": "i-new", "LifecycleState": "InService", "HealthStatus": "Healthy"},
-        ]}]
+        "AutoScalingGroups": [
+            {
+                "Instances": [
+                    {"InstanceId": "i-old", "LifecycleState": "InService", "HealthStatus": "Healthy"},
+                    {"InstanceId": "i-new", "LifecycleState": "InService", "HealthStatus": "Healthy"},
+                ]
+            }
+        ]
     }
     dynamodb = MagicMock()
     dynamodb.get_item.return_value = {"Item": {"Owner": {"S": "i-new"}}}
@@ -114,14 +130,14 @@ def test_fenced_deployment_fails_when_no_healthy_member_holds_lease(deployment_s
     deployment_state.spot_lease_table_name = "gm-lease"
     autoscaling = MagicMock()
     autoscaling.describe_auto_scaling_groups.return_value = {
-        "AutoScalingGroups": [{"Instances": [
-            {"InstanceId": "i-old", "LifecycleState": "InService", "HealthStatus": "Healthy"}
-        ]}]
+        "AutoScalingGroups": [
+            {"Instances": [{"InstanceId": "i-old", "LifecycleState": "InService", "HealthStatus": "Healthy"}]}
+        ]
     }
     dynamodb = MagicMock()
     dynamodb.get_item.return_value = {}
 
     with pytest.raises(RuntimeError, match="active-node lease"):
-        InstanceResolver(
-            MagicMock(), autoscaling_client=autoscaling, dynamodb_client=dynamodb
-        ).resolve(deployment_state)
+        InstanceResolver(MagicMock(), autoscaling_client=autoscaling, dynamodb_client=dynamodb).resolve(
+            deployment_state
+        )

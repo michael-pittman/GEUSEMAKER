@@ -185,7 +185,7 @@ def test_production_spot_protection_installs_single_writer_guard() -> None:
     assert "Using EFS DNS so this replacement resolves its local-AZ mount target" in script
     assert 'MOUNT_OPTS="tls,iam"' in script
     assert "LAUNCH_HOOK=test-stack-launch" in script
-    assert "docker compose -f \"$COMPOSE_FILE\" stop -t 45" in script
+    assert 'docker compose -f "$COMPOSE_FILE" stop -t 45' in script
     assert script.index("spot-lease-acquired") < script.index('SERVICES_GUARD="/var/lib/geusemaker/services-started"')
 
 
@@ -232,7 +232,7 @@ def test_spot_guard_can_discover_target_group_from_asg() -> None:
     script = UserDataGenerator().generate(config)
 
     assert "describe-load-balancer-target-groups" in script
-    assert 'TARGET_GROUP_ARN=' in script
+    assert "TARGET_GROUP_ARN=" in script
 
 
 def test_tier_automation_external_webhook_host_is_used() -> None:

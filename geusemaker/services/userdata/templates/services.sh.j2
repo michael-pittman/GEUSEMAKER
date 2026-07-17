@@ -62,8 +62,8 @@ else
             echo "N8N_ENCRYPTION_KEY=${n8n_encryption_key}"
             echo "CRAWL4AI_API_TOKEN=${crawl4ai_api_token}"
             echo "N8N_METRICS={{ "true" if tier == "automation" or tier == "gpu" else "false" }}"
-            echo "DOCKER_RUNTIME={{ "nvidia" if tier == "gpu" else "runc" }}"
-            echo "NVIDIA_VISIBLE_DEVICES={{ "all" if tier == "gpu" else "" }}"
+            echo "DOCKER_RUNTIME={{ "nvidia" if workload == "gpu" else "runc" }}"
+            echo "NVIDIA_VISIBLE_DEVICES={{ "all" if workload == "gpu" else "" }}"
 {% if n8n_external_host %}
             echo "N8N_HOST={{ n8n_external_host }}"
             echo "N8N_PROTOCOL={{ n8n_external_protocol or 'http' }}"
@@ -167,7 +167,7 @@ services:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - /mnt/efs/ollama:/root/.ollama
-{% if tier == "gpu" %}
+{% if workload == "gpu" %}
     # GPU device reservations (requires Docker Compose 1.28.0+ and nvidia-container-toolkit)
     # Only enabled for GPU tier deployments
     deploy:

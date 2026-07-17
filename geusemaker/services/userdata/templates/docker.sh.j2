@@ -111,7 +111,7 @@ else
         usermod -aG docker "$primary_user"
     fi
 
-{% if tier == "gpu" %}
+{% if workload == "gpu" %}
     # Install NVIDIA Docker runtime for GPU support
     echo "Installing NVIDIA Docker runtime..."
     distribution=$(. /etc/os-release;echo $ID$VERSION_ID)

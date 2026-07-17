@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class UserDataConfig(BaseModel):
@@ -17,6 +17,10 @@ class UserDataConfig(BaseModel):
         description="EFS mount target IP address for the selected AZ (bypasses DNS/DescribeMountTargets on-instance).",
     )
     tier: Literal["dev", "automation", "gpu"] = Field(..., description="Deployment tier affecting configuration")
+    workload: Literal["cpu", "gpu"] | None = Field(
+        default=None,
+        description="Compute workload; when None, inferred from tier (gpu iff tier==gpu).",
+    )
     stack_name: str = Field(..., description="Stack name for resource tagging")
     region: str = Field(..., description="AWS region (e.g., us-east-1)")
     n8n_port: int = Field(default=5678, description="n8n web interface port")
@@ -75,7 +79,9 @@ class UserDataConfig(BaseModel):
         default=None,
         description="Optional ALB target group; when omitted the guard discovers it from the ASG.",
     )
-    spot_log_group_name: str | None = Field(default=None, description="CloudWatch log group for structured Spot events.")
+    spot_log_group_name: str | None = Field(
+        default=None, description="CloudWatch log group for structured Spot events."
+    )
     spot_termination_hook_name: str | None = Field(
         default=None,
         description="Optional ASG termination lifecycle hook completed after draining.",
@@ -84,3 +90,10 @@ class UserDataConfig(BaseModel):
         default=None,
         description="Optional ASG launch lifecycle hook completed after the active lease is acquired.",
     )
+
+    @model_validator(mode="after")
+    def _resolve_workload(self) -> UserDataConfig:
+        """Infer workload from tier when not explicitly provided (gpu iff tier==gpu)."""
+        if self.workload is None:
+            self.workload = "gpu" if self.tier == "gpu" else "cpu"
+        return self

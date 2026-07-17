@@ -14,7 +14,7 @@ from geusemaker.cli.output import (
 )
 from geusemaker.infra.state import StateManager
 from geusemaker.models.update import UpdateRequest
-from geusemaker.services.update import UpdateOrchestrator
+from geusemaker.orchestration import UpdateOrchestrator
 
 
 def _parse_images(images: tuple[str, ...]) -> dict[str, str]:

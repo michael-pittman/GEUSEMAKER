@@ -13,7 +13,7 @@ from geusemaker.cli.output import (
     output_option,
 )
 from geusemaker.infra.state import StateManager
-from geusemaker.services.rollback import RollbackService
+from geusemaker.orchestration import RollbackService
 
 
 @click.command("rollback")

@@ -7,7 +7,7 @@ import pytest
 
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState
 from geusemaker.models.update import UpdateRequest
-from geusemaker.services.update.orchestrator import UpdateOrchestrator
+from geusemaker.orchestration.update import UpdateOrchestrator
 
 
 class StubStateManager:

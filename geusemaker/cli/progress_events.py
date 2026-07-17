@@ -1,24 +1,9 @@
-"""UI-neutral deployment progress contract."""
+"""Back-compat shim for the UI-neutral deployment progress contract.
 
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Literal, Protocol
+The contract now lives in :mod:`geusemaker.progress`. This module re-exports it
+so existing imports from ``geusemaker.cli.progress_events`` keep working.
+"""
 
-Stage = Literal["validate", "vpc", "sg", "efs", "iam", "ec2", "spot", "userdata", "alb", "cdn", "health", "finalize"]
-ProgressLevel = Literal["debug", "info", "warn", "error"]
-
-
-@dataclass(frozen=True, slots=True)
-class ProgressEvent:
-    stage: Stage
-    message: str
-    level: ProgressLevel = "info"
-    resource_id: str | None = None
-    ts: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
-class ProgressCallback(Protocol):
-    def __call__(self, event: ProgressEvent) -> None: ...
-
+from geusemaker.progress import ProgressCallback, ProgressEvent, ProgressLevel, Stage
 
 __all__ = ["ProgressCallback", "ProgressEvent", "ProgressLevel", "Stage"]

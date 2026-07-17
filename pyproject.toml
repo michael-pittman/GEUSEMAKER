@@ -27,9 +27,10 @@ dev = [
   "pytest-asyncio>=0.24",
   "pytest-cov>=5.0",
   "moto==5.0.25",
-  "ruff>=0.5",
+  "ruff>=0.15.22,<0.16",  # pinned: new lint rules in minor bumps otherwise break CI
   "mypy>=1.11",
   "types-PyYAML>=6.0",
+  "import-linter>=2.0",
 ]
 tui = ["textual>=8.2,<9"]
 
@@ -55,14 +56,19 @@ ignore = [
   "N818",     # exception naming - existing exceptions don't use Error suffix
   "ASYNC109", # timeout param - false positive for sync wrappers
   "B023",     # lambda loop var - common pattern in safe_call wrappers
-  "BLE001",   # blind exception - acceptable in rollback/monitoring code
   "UP046",    # generic subclass - existing code uses Generic[T] style
   "UP047",    # generic function - existing code uses TypeVar style
   "S112",     # try-except-continue - intentional in rollback code
   "E731",     # lambda assignment - acceptable in test fixtures
   "F841",     # unused variable - will fix incrementally
   "COM812",   # trailing comma - conflicts with formatter
+  "UP042",    # str+Enum mixin is intentional; StrEnum changes str()/Click rendering
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use pytest's synchronous tmp_path inside async pilot tests; the blocking
+# path methods are harmless there.
+"tests/**" = ["ASYNC240"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -85,3 +91,44 @@ disable_error_code = ["attr-defined", "operator", "arg-type", "var-annotated", "
 [tool.pytest.ini_options]
 addopts = "-q --color=yes"
 pythonpath = ["."]
+
+[tool.importlinter]
+root_package = "geusemaker"
+
+# Layered architecture: CLI -> Orchestration -> Services -> Infra.
+# Each layer may import lower layers, never higher ones. Shared low-level
+# packages (models, config, progress, utils, runtime_assets) sit outside the
+# stack and may be imported by anyone, so they are intentionally omitted.
+[[tool.importlinter.contracts]]
+name = "Layered architecture (CLI > Orchestration > Services > Infra)"
+type = "layers"
+layers = [
+  "geusemaker.cli",
+  "geusemaker.orchestration",
+  "geusemaker.services",
+  "geusemaker.infra",
+]
+
+# Explicit forbidden edges mirroring tests/unit/test_architecture/test_import_direction.py:
+# orchestration and services must never depend on the presentation (CLI) layer.
+[[tool.importlinter.contracts]]
+name = "Orchestration and Services must not import CLI"
+type = "forbidden"
+source_modules = [
+  "geusemaker.orchestration",
+  "geusemaker.services",
+]
+forbidden_modules = [
+  "geusemaker.cli",
+]
+
+# Services must not depend on Orchestration (services are a lower layer).
+[[tool.importlinter.contracts]]
+name = "Services must not import Orchestration"
+type = "forbidden"
+source_modules = [
+  "geusemaker.services",
+]
+forbidden_modules = [
+  "geusemaker.orchestration",
+]

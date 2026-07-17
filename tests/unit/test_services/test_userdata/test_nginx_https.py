@@ -297,7 +297,9 @@ def test_nginx_config_uses_localhost_not_container_names() -> None:
     assert "proxy_pass http://localhost:6333" in script, "qdrant should proxy to localhost:6333"
     assert "proxy_pass http://localhost:6333" in script, "qdrant-ui should proxy to localhost:6333 (Qdrant dashboard)"
     assert "/dashboard/" in script, "qdrant-ui should rewrite to /dashboard/"
-    assert "location = /qdrant-ui" in script or "location=/qdrant-ui" in script, "qdrant-ui should redirect /qdrant-ui to /qdrant-ui/"
+    assert "location = /qdrant-ui" in script or "location=/qdrant-ui" in script, (
+        "qdrant-ui should redirect /qdrant-ui to /qdrant-ui/"
+    )
     assert "proxy_pass http://localhost:11235" in script, "crawl4ai should proxy to localhost:11235"
 
     # Should NOT use container names (these don't resolve on host system)

@@ -592,7 +592,7 @@ class VPCService(BaseService):
                     self._safe_call(lambda: self._ec2.delete_internet_gateway(InternetGatewayId=r_id))
                 elif r_type == "vpc" and r_id:
                     self._safe_call(lambda: self._ec2.delete_vpc(VpcId=r_id))
-            except Exception:
+            except Exception:  # noqa: BLE001 - best-effort rollback cleanup
                 # Rollback is best-effort; swallow errors to continue cleanup.
                 continue
 

@@ -122,11 +122,7 @@ class SecurityGroupService(BaseService):
 
             # Check if port 443 is already open
             for rule in rules:
-                if (
-                    rule.get("IpProtocol") == "tcp"
-                    and rule.get("FromPort") == 443
-                    and rule.get("ToPort") == 443
-                ):
+                if rule.get("IpProtocol") == "tcp" and rule.get("FromPort") == 443 and rule.get("ToPort") == 443:
                     return False  # Port already open
 
             # Port 443 not found, add it

@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
+from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
+
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentState
 from geusemaker.models.destruction import (
@@ -17,6 +19,7 @@ from geusemaker.models.destruction import (
 )
 from geusemaker.services.acm import ACMService
 from geusemaker.services.alb import ALBService
+from geusemaker.services.base import AWSError
 from geusemaker.services.cloudfront import CloudFrontService
 from geusemaker.services.ec2 import EC2Service
 from geusemaker.services.efs import EFSService
@@ -118,10 +121,10 @@ class DestructionService:
                             # Delete the distribution
                             _progress(f"Deleting CloudFront distribution {state.cloudfront_id}")
                             self.cloudfront.delete_distribution(state.cloudfront_id, new_etag)
-                        except Exception as exc:  # noqa: BLE001
+                        except AWSError as exc:
                             errors.append(f"CloudFront deletion failed: {exc}")
                     deleted.append(self._deleted("cloudfront", state.cloudfront_id))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"CloudFront cleanup failed: {exc}")
 
         # Stop replacement automation before deleting its ALB target group or IAM profile.
@@ -143,7 +146,7 @@ class DestructionService:
                     deleted.append(self._deleted("auto_scaling_group", state.auto_scaling_group_name))
                 if state.launch_template_id:
                     deleted.append(self._deleted("launch_template", state.launch_template_id))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"Spot automation cleanup failed: {exc}")
 
         # ALB cleanup (must be before EC2 instance termination)
@@ -160,9 +163,9 @@ class DestructionService:
                                 TargetGroupArn=state.target_group_arn,
                                 Targets=[{"Id": state.instance_id}],
                             )
-                        except Exception as exc:  # noqa: BLE001
+                        except (ClientError, BotoCoreError) as exc:
                             errors.append(f"Target deregistration failed: {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Target deregistration cleanup failed: {exc}")
 
         try:
@@ -177,10 +180,10 @@ class DestructionService:
                     if not dry_run:
                         try:
                             self._elbv2_raw.delete_load_balancer(LoadBalancerArn=state.alb_arn)
-                        except Exception as exc:  # noqa: BLE001
+                        except (ClientError, BotoCoreError) as exc:
                             errors.append(f"ALB deletion failed: {exc}")
                     deleted.append(self._deleted("alb", state.alb_arn))
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"ALB cleanup failed: {exc}")
 
         try:
@@ -199,7 +202,7 @@ class DestructionService:
                     if not dry_run:
                         self._delete_target_group_with_retry(state.target_group_arn, errors)
                     deleted.append(self._deleted("target_group", state.target_group_arn))
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Target group cleanup failed: {exc}")
 
         # Route 53 records and ACM certificate created for HTTPS (must be after ALB
@@ -207,7 +210,7 @@ class DestructionService:
         # deleted while an ALB listener still uses it)
         try:
             self._cleanup_dns_and_certificate(state, dry_run, deleted, errors, _progress)
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"DNS/certificate cleanup failed: {exc}")
 
         try:
@@ -224,7 +227,7 @@ class DestructionService:
                         _progress("Waiting for EC2 instance termination")
                         self.ec2.wait_for_terminated(state.instance_id)
                     deleted.append(self._deleted("ec2_instance", state.instance_id))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"Instance termination failed: {exc}")
 
         # IAM cleanup: instance profile and role (must be after EC2 instance termination)
@@ -247,7 +250,7 @@ class DestructionService:
                             state.iam_role_name,
                         )
                     deleted.append(self._deleted("iam_instance_profile", state.iam_instance_profile_name))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"IAM instance profile deletion failed: {exc}")
 
         try:
@@ -266,7 +269,7 @@ class DestructionService:
                     if not dry_run:
                         self.iam.delete_role(state.iam_role_name)
                     deleted.append(self._deleted("iam_role", state.iam_role_name))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"IAM role deletion failed: {exc}")
 
         try:
@@ -292,9 +295,9 @@ class DestructionService:
                                 _progress(f"Waiting for EFS mount target {mt_id} deletion")
                                 self.efs.wait_for_mount_target_deleted(mt_id)
                             deleted.append(self._deleted("efs_mount_target", mt_id))
-                        except Exception as exc:  # noqa: BLE001
+                        except AWSError as exc:
                             errors.append(f"EFS mount target {mt_id} deletion failed: {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"EFS mount target deletion failed: {exc}")
 
         try:
@@ -308,7 +311,7 @@ class DestructionService:
                     if not dry_run:
                         self.efs.delete_filesystem(state.efs_id)
                     deleted.append(self._deleted("efs", state.efs_id))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"EFS deletion failed: {exc}")
 
         try:
@@ -327,7 +330,7 @@ class DestructionService:
                     if not dry_run:
                         self.sg_service.delete_security_group(state.security_group_id)
                     deleted.append(self._deleted("security_group", state.security_group_id))
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"Security group deletion failed: {exc}")
 
         try:
@@ -341,7 +344,7 @@ class DestructionService:
                 _progress("Preserving reused subnets")
                 for subnet_id in state.subnet_ids:
                     preserved.append(PreservedResource(resource_type="subnet", resource_id=subnet_id, reason="reused"))
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Subnet deletion failed: {exc}")
 
         try:
@@ -355,7 +358,7 @@ class DestructionService:
             else:
                 _progress("Preserving reused VPC")
                 preserved.append(PreservedResource(resource_type="vpc", resource_id=state.vpc_id, reason="reused"))
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"VPC deletion failed: {exc}")
 
         archived_path: str | None = None
@@ -430,7 +433,7 @@ class DestructionService:
                     if not dry_run:
                         self.route53.delete_record_set(zone_id, rrset)
                     deleted.append(self._deleted("route53_record", f"{rrset['Type']} {domain}"))
-            except Exception as exc:  # noqa: BLE001
+            except AWSError as exc:
                 errors.append(f"Route 53 record cleanup for {domain} failed: {exc}")
 
         cert_arn = state.certificate_arn
@@ -439,7 +442,7 @@ class DestructionService:
 
         try:
             tags = self.acm.list_tags(cert_arn)
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"ACM tag lookup for {cert_arn} failed; preserving certificate: {exc}")
             return
         if not any(tag.get("Key") == "Stack" and tag.get("Value") == state.stack_name for tag in tags):
@@ -455,7 +458,7 @@ class DestructionService:
                 if rr and rr.get("Name") and rr.get("Type"):
                     validation_record = rr
                     break
-        except Exception as exc:  # noqa: BLE001
+        except AWSError as exc:
             errors.append(f"ACM describe for {cert_arn} failed: {exc}")
 
         _progress(f"Deleting ACM certificate {cert_arn}")
@@ -472,7 +475,7 @@ class DestructionService:
                     if not dry_run:
                         self.route53.delete_record_set(zone_id, rrset)
                     deleted.append(self._deleted("route53_record", f"{rrset['Type']} {validation_record['Name']}"))
-            except Exception as exc:  # noqa: BLE001
+            except AWSError as exc:
                 errors.append(f"ACM validation record cleanup failed: {exc}")
 
     def _delete_target_group_with_retry(
@@ -493,8 +496,8 @@ class DestructionService:
             try:
                 self._elbv2_raw.delete_target_group(TargetGroupArn=target_group_arn)
                 return True
-            except Exception as exc:  # noqa: BLE001
-                if "ResourceInUse" in str(exc) and attempt < max_attempts - 1:
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] == "ResourceInUse" and attempt < max_attempts - 1:
                     _time.sleep(delay_seconds)
                     continue
                 errors.append(f"Target group deletion failed: {exc}")
@@ -515,8 +518,8 @@ class DestructionService:
             try:
                 self.acm.delete_certificate(certificate_arn)
                 return True
-            except RuntimeError as exc:
-                if "ResourceInUse" in str(exc) and attempt < max_attempts - 1:
+            except AWSError as exc:
+                if exc.code == "ResourceInUse" and attempt < max_attempts - 1:
                     _time.sleep(delay_seconds)
                     continue
                 errors.append(f"ACM certificate deletion failed: {exc}")
@@ -540,7 +543,7 @@ class DestructionService:
             enis = self._ec2_raw.describe_network_interfaces(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
                 "NetworkInterfaces", []
             )
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Describe network interfaces failed: {exc}")
             enis = []
 
@@ -566,14 +569,14 @@ class DestructionService:
                         self._ec2_raw.detach_network_interface(AttachmentId=attachment_id, Force=True)
                 # Delete the network interface
                 self._ec2_raw.delete_network_interface(NetworkInterfaceId=eni_id)
-            except Exception as exc:  # noqa: BLE001
+            except (ClientError, BotoCoreError) as exc:
                 errors.append(f"Network interface {eni_id} deletion failed: {exc}")
 
         try:
             igws = self._ec2_raw.describe_internet_gateways(
                 Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
             ).get("InternetGateways", [])
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Describe internet gateways failed: {exc}")
             igws = []
 
@@ -584,14 +587,14 @@ class DestructionService:
                 if any(att.get("VpcId") == vpc_id for att in attachments):
                     self._ec2_raw.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
                 self._ec2_raw.delete_internet_gateway(InternetGatewayId=igw_id)
-            except Exception as exc:  # noqa: BLE001
+            except (ClientError, BotoCoreError) as exc:
                 errors.append(f"Internet gateway {igw_id} deletion failed: {exc}")
 
         try:
             route_tables = self._ec2_raw.describe_route_tables(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]).get(
                 "RouteTables", []
             )
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Describe route tables failed: {exc}")
             route_tables = []
 
@@ -602,7 +605,7 @@ class DestructionService:
                 continue
             try:
                 self._ec2_raw.delete_route_table(RouteTableId=rt_id)
-            except Exception as exc:  # noqa: BLE001
+            except (ClientError, BotoCoreError) as exc:
                 errors.append(f"Route table {rt_id} deletion failed: {exc}")
 
     def _alb_belongs_to_stack(self, lb_arn: str, stack_name: str, errors: list[str]) -> bool:
@@ -613,7 +616,7 @@ class DestructionService:
         """
         try:
             tag_descriptions = self._elbv2_raw.describe_tags(ResourceArns=[lb_arn]).get("TagDescriptions", [])
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Tag lookup for ALB {lb_arn} failed; skipping deletion: {exc}")
             return False
         for desc in tag_descriptions:
@@ -658,7 +661,7 @@ class DestructionService:
                     listeners = self._elbv2_raw.describe_listeners(LoadBalancerArn=lb_arn).get("Listeners", [])
                     for listener in listeners:
                         self._elbv2_raw.delete_listener(ListenerArn=listener["ListenerArn"])
-                except Exception as exc:  # noqa: BLE001
+                except (ClientError, BotoCoreError) as exc:
                     errors.append(f"Listener cleanup for ALB {lb_name} failed: {exc}")
 
                 # Delete target groups associated with this ALB (with retry:
@@ -667,14 +670,14 @@ class DestructionService:
                     tg_resp = self._elbv2_raw.describe_target_groups(LoadBalancerArn=lb_arn)
                     for tg in tg_resp.get("TargetGroups", []):
                         self._delete_target_group_with_retry(tg["TargetGroupArn"], errors)
-                except Exception as exc:  # noqa: BLE001
+                except (ClientError, BotoCoreError) as exc:
                     errors.append(f"Target group cleanup for ALB {lb_name} failed: {exc}")
 
                 # Delete the ALB itself
                 try:
                     self._elbv2_raw.delete_load_balancer(LoadBalancerArn=lb_arn)
                     deleted_any = True
-                except Exception as exc:  # noqa: BLE001
+                except (ClientError, BotoCoreError) as exc:
                     errors.append(f"ALB {lb_name} deletion failed: {exc}")
 
             if not deleted_any:
@@ -689,7 +692,7 @@ class DestructionService:
                     enis = self._ec2_raw.describe_network_interfaces(
                         Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
                     ).get("NetworkInterfaces", [])
-                except Exception as exc:  # noqa: BLE001
+                except (ClientError, BotoCoreError) as exc:
                     errors.append(f"Describe network interfaces failed while waiting for ELB ENIs to release: {exc}")
                     return
 
@@ -701,7 +704,7 @@ class DestructionService:
 
             errors.append(f"Timed out waiting for ELB-managed ENIs to release in VPC {vpc_id} after {timeout_seconds}s")
 
-        except Exception as exc:  # noqa: BLE001
+        except (ClientError, BotoCoreError) as exc:
             errors.append(f"Orphan ALB discovery in VPC {vpc_id} failed: {exc}")
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from statistics import pstdev
@@ -9,8 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
-from geusemaker.cli import console
-from geusemaker.cli.branding import EMOJI
 from geusemaker.infra import AWSClientFactory
 from geusemaker.models.compute import InstanceSelection, SavingsComparison, SpotAnalysis
 from geusemaker.models.deployment import DeploymentConfig
@@ -19,6 +18,8 @@ from geusemaker.services.pricing import PricingService
 
 if TYPE_CHECKING:
     from geusemaker.services.ec2 import EC2Service
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SpotSelectionService(BaseService):
@@ -112,9 +113,7 @@ class SpotSelectionService(BaseService):
                 return ami_id
             except Exception as exc:  # noqa: BLE001
                 # Log and fallback to placeholder if AMI selection fails
-                import logging
-
-                logging.getLogger(__name__).debug(f"AMI selection failed for dry-run check: {exc}. Using fallback AMI.")
+                LOGGER.debug(f"AMI selection failed for dry-run check: {exc}. Using fallback AMI.")
 
         # Fallback: use a placeholder AMI ID (less accurate but won't fail)
         return "ami-0c55b159cbfafe1f0"  # Generic Amazon Linux 2 AMI (always exists but may be deprecated)
@@ -165,10 +164,7 @@ class SpotSelectionService(BaseService):
             else:
                 # Inconclusive (permissions, missing default VPC, ...): assume capacity
                 # and let launch-time fallback handle a genuine shortage.
-                console.print(
-                    f"{EMOJI['warning']} Spot capacity dry-run inconclusive in {az} ({code}); assuming capacity.",
-                    verbosity="debug",
-                )
+                LOGGER.debug(f"Spot capacity dry-run inconclusive in {az} ({code}); assuming capacity.")
                 result = True
         else:
             result = True
@@ -226,10 +222,7 @@ class SpotSelectionService(BaseService):
 
         except ClientError as exc:
             # Gracefully handle API failures - don't block deployment
-            console.print(
-                f"{EMOJI['warning']} Could not fetch spot placement scores: {exc}",
-                verbosity="debug",
-            )
+            LOGGER.debug(f"Could not fetch spot placement scores: {exc}")
             return {}
 
     def _az_id_to_name(self, region: str) -> dict[str, str]:
@@ -244,10 +237,7 @@ class SpotSelectionService(BaseService):
                     if zone_id and zone_name:
                         mapping[zone_id] = zone_name
             except ClientError as exc:
-                console.print(
-                    f"{EMOJI['warning']} Could not map AZ ids to names: {exc}",
-                    verbosity="debug",
-                )
+                LOGGER.debug(f"Could not map AZ ids to names: {exc}")
             self._az_name_cache[region] = mapping
         return self._az_name_cache[region]
 
@@ -271,11 +261,10 @@ class SpotSelectionService(BaseService):
         # Check if spot prices are too high overall
         if analysis.lowest_price >= on_demand_price * Decimal("0.8"):
             fallback_reason = "Spot price >= 80% of on-demand"
-            console.print(
-                f"{EMOJI['info']} Spot price too high: ${analysis.lowest_price:.4f}/hr "
+            LOGGER.info(
+                f"Spot price too high: ${analysis.lowest_price:.4f}/hr "
                 f"(${on_demand_price:.4f}/hr on-demand = {float(analysis.lowest_price / on_demand_price * 100):.1f}% of on-demand cost). "
-                "Falling back to on-demand.",
-                verbosity="info",
+                "Falling back to on-demand."
             )
             return self._selection(
                 instance_type=config.instance_type,
@@ -291,10 +280,9 @@ class SpotSelectionService(BaseService):
         # Check if spot prices are too volatile
         if analysis.price_stability_score < 0.5:
             fallback_reason = "Spot price volatility too high"
-            console.print(
-                f"{EMOJI['info']} Spot price unstable: stability score {analysis.price_stability_score:.2f} < 0.5 threshold. "
-                f"Falling back to on-demand for reliability.",
-                verbosity="info",
+            LOGGER.info(
+                f"Spot price unstable: stability score {analysis.price_stability_score:.2f} < 0.5 threshold. "
+                f"Falling back to on-demand for reliability."
             )
             return self._selection(
                 instance_type=config.instance_type,
@@ -310,17 +298,12 @@ class SpotSelectionService(BaseService):
         # Try all AZs with good prices, sorted by price and placement score
         # Filter to AZs with reasonable prices (< 80% of on-demand)
         viable_azs = [
-            (az, price)
-            for az, price in analysis.prices_by_az.items()
-            if price < on_demand_price * Decimal("0.8")
+            (az, price) for az, price in analysis.prices_by_az.items() if price < on_demand_price * Decimal("0.8")
         ]
 
         if not viable_azs:
             # No viable AZs found - fall back to on-demand
-            console.print(
-                f"{EMOJI['info']} No spot AZs with good prices found. Falling back to on-demand.",
-                verbosity="info",
-            )
+            LOGGER.info("No spot AZs with good prices found. Falling back to on-demand.")
             return self._selection(
                 instance_type=config.instance_type,
                 az=None,
@@ -348,10 +331,9 @@ class SpotSelectionService(BaseService):
 
         for az, price in viable_azs:
             placement_score = analysis.placement_scores_by_az.get(az, 0.0)
-            console.print(
-                f"{EMOJI['info']} Checking spot capacity for {config.instance_type} in {az}: "
-                f"${price:.4f}/hr (placement score: {placement_score:.1f})",
-                verbosity="debug",
+            LOGGER.debug(
+                f"Checking spot capacity for {config.instance_type} in {az}: "
+                f"${price:.4f}/hr (placement score: {placement_score:.1f})"
             )
 
             if self.check_spot_capacity(config.instance_type, az, config.region):
@@ -362,19 +344,14 @@ class SpotSelectionService(BaseService):
 
             # This AZ has no capacity, try next
             unavailable_azs.append(az)
-            console.print(
-                f"{EMOJI['warning']} Spot capacity unavailable for {config.instance_type} in {az}. "
-                "Trying next AZ...",
-                verbosity="debug",
-            )
+            LOGGER.debug(f"Spot capacity unavailable for {config.instance_type} in {az}. Trying next AZ...")
 
         # If no AZ has capacity, fall back to on-demand
         if selected_az is None or selected_price is None:
-            fallback_reason = f"Spot capacity unavailable in all {len(viable_azs)} viable AZs: {', '.join(unavailable_azs)}"
-            console.print(
-                f"{EMOJI['info']} {fallback_reason}. Falling back to on-demand.",
-                verbosity="info",
+            fallback_reason = (
+                f"Spot capacity unavailable in all {len(viable_azs)} viable AZs: {', '.join(unavailable_azs)}"
             )
+            LOGGER.info(f"{fallback_reason}. Falling back to on-demand.")
             return self._selection(
                 instance_type=config.instance_type,
                 az=None,
@@ -391,18 +368,14 @@ class SpotSelectionService(BaseService):
         placement_score = analysis.placement_scores_by_az.get(selected_az, 0.0)
         selection_reason = f"Best available spot price with capacity (placement score: {placement_score:.1f})"
 
-        console.print(
-            f"{EMOJI['check']} Spot instance selected in {selected_az}: "
+        LOGGER.info(
+            f"Spot instance selected in {selected_az}: "
             f"${selected_price:.4f}/hr (vs ${on_demand_price:.4f}/hr on-demand = {savings_pct:.1f}% savings). "
-            f"Stability score: {analysis.price_stability_score:.2f}, placement score: {placement_score:.1f}",
-            verbosity="info",
+            f"Stability score: {analysis.price_stability_score:.2f}, placement score: {placement_score:.1f}"
         )
 
         if unavailable_azs:
-            console.print(
-                f"{EMOJI['info']} Checked {len(unavailable_azs)} other AZ(s) with no capacity: {', '.join(unavailable_azs)}",
-                verbosity="debug",
-            )
+            LOGGER.debug(f"Checked {len(unavailable_azs)} other AZ(s) with no capacity: {', '.join(unavailable_azs)}")
 
         return self._selection(
             instance_type=config.instance_type,

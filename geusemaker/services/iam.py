@@ -262,8 +262,8 @@ class IAMService(BaseService):
                     raise RuntimeError(
                         f"Instance profile {profile_name} exists but role {role_name} not attached after {max_attempts * delay}s"
                     )
-                except Exception as e:
-                    if "NoSuchEntity" in str(e):
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "NoSuchEntity":
                         if attempt < max_attempts - 1:
                             time.sleep(delay)
                             continue
@@ -303,18 +303,18 @@ class IAMService(BaseService):
                             InstanceProfileName=profile_name,
                             RoleName=role_name,
                         )
-                    except Exception:  # noqa: S110
+                    except Exception:  # noqa: S110, BLE001 - best-effort detach, role may not be attached
                         pass  # Role wasn't attached, continue - acceptable to ignore
 
-            except Exception as e:
-                if "NoSuchEntity" not in str(e):
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchEntity":
                     raise
 
             # Delete the instance profile
             try:
                 self._iam.delete_instance_profile(InstanceProfileName=profile_name)
-            except Exception as e:
-                if "NoSuchEntity" not in str(e):
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchEntity":
                     raise
 
         self._safe_call(_call)
@@ -334,7 +334,7 @@ class IAMService(BaseService):
                         RoleName=role_name,
                         PolicyArn="arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
                     )
-                except Exception:  # noqa: S110
+                except Exception:  # noqa: S110, BLE001 - best-effort detach, policy may not be attached
                     pass  # Policy might not be attached, continue
 
                 # List and delete all inline policies
@@ -347,8 +347,8 @@ class IAMService(BaseService):
 
                 # Delete the role
                 self._iam.delete_role(RoleName=role_name)
-            except Exception as e:
-                if "NoSuchEntity" not in str(e):
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "NoSuchEntity":
                     raise
 
         self._safe_call(_call)

@@ -139,6 +139,12 @@ class MonitorScreen(Screen[None]):
         self._host: str | None = None
         self._poll_count = 0
         self._last_statuses: dict[str, bool] = {}
+        # Widget references cached in on_mount so the polling worker never
+        # re-queries the DOM (which races teardown pruning -> NoMatches).
+        self._table: DataTable | None = None
+        self._status: Static | None = None
+        self._last_poll: Static | None = None
+        self._events: RichLog | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="monitor-root"):
@@ -159,11 +165,16 @@ class MonitorScreen(Screen[None]):
             )
 
     def on_mount(self) -> None:
-        table = self.query_one("#monitor-table", DataTable)
-        table.cursor_type = "none"
-        table.add_columns("SERVICE", "STATUS", "LATENCY MS", "DETAIL")
-        events = self.query_one("#monitor-events", RichLog)
-        events.write(f"{_WAIT_MARK} FIRST POLL… LOADING STATE FOR '{self.stack_name}'")
+        # Resolve every widget the worker touches exactly once, while the tree
+        # is guaranteed mounted, and hold the references. The worker then never
+        # calls query_one, so it cannot race the teardown that prunes children.
+        self._table = self.query_one("#monitor-table", DataTable)
+        self._status = self.query_one("#monitor-status", Static)
+        self._last_poll = self.query_one("#monitor-last-poll", Static)
+        self._events = self.query_one("#monitor-events", RichLog)
+        self._table.cursor_type = "none"
+        self._table.add_columns("SERVICE", "STATUS", "LATENCY MS", "DETAIL")
+        self._log(f"{_WAIT_MARK} FIRST POLL… LOADING STATE FOR '{self.stack_name}'")
         self._run_monitor()
 
     def action_dismiss_screen(self) -> None:
@@ -191,29 +202,38 @@ class MonitorScreen(Screen[None]):
             self._show_fatal(f"UNRESOLVABLE HOST FOR '{self.stack_name}' · STATE HAS NO PUBLIC OR PRIVATE IP")
             return
         self._host = host
-        self.query_one("#monitor-status", Static).update(
+        self._set_static(
+            self._status,
             f"{_WAIT_MARK} TARGET {host} · INTERVAL {self.poll_interval:g}S · AWAITING FIRST POLL",
         )
-        self.query_one("#monitor-events", RichLog).write(
-            f"{_OK_MARK} TARGET HOST {host} · POLLING EVERY {self.poll_interval:g}S",
-        )
+        self._log(f"{_OK_MARK} TARGET HOST {host} · POLLING EVERY {self.poll_interval:g}S")
         while True:
             try:
                 results = await self._health_checker(host)
             except (httpx.HTTPError, OSError, RuntimeError) as exc:
+                # The health check yields control; the screen may have started
+                # tearing down while it ran. Stop rather than touch dead widgets.
+                if not self._is_live():
+                    return
                 self._poll_count += 1
-                self.query_one("#monitor-events", RichLog).write(
-                    f"{_ERROR_MARK} POLL {self._poll_count} FAILED · {exc}",
-                )
+                self._log(f"{_ERROR_MARK} POLL {self._poll_count} FAILED · {exc}")
             else:
+                if not self._is_live():
+                    return
                 self._poll_count += 1
                 self._apply_results(results)
             await asyncio.sleep(self.poll_interval)
 
     def _apply_results(self, results: list[HealthCheckResult]) -> None:
-        """Refresh the status table, timestamp line, and event stream."""
-        table = self.query_one("#monitor-table", DataTable)
-        events = self.query_one("#monitor-events", RichLog)
+        """Refresh the status table, timestamp line, and event stream.
+
+        Uses the widget references cached in ``on_mount`` and skips any widget
+        that has already been pruned, so a poll that lands mid-teardown is a
+        safe no-op instead of a ``NoMatches`` crash.
+        """
+        table = self._table
+        if table is None or not table.is_attached:
+            return
         stamp = datetime.now(UTC).strftime("%H:%M:%S")
         table.clear()
         healthy_count = 0
@@ -235,24 +255,48 @@ class MonitorScreen(Screen[None]):
             previous = self._last_statuses.get(name)
             if previous is not None and previous != result.healthy:
                 if result.healthy:
-                    events.write(f"{_OK_MARK} {name.upper()} RECOVERED")
+                    self._log(f"{_OK_MARK} {name.upper()} RECOVERED")
                 else:
-                    events.write(f"{_ERROR_MARK} {name.upper()} WENT DOWN")
+                    self._log(f"{_ERROR_MARK} {name.upper()} WENT DOWN")
             if not result.healthy:
-                events.write(f"{_ERROR_MARK} {name.upper()} UNHEALTHY · {detail}")
+                self._log(f"{_ERROR_MARK} {name.upper()} UNHEALTHY · {detail}")
             self._last_statuses[name] = result.healthy
-        self.query_one("#monitor-status", Static).update(
+        self._set_static(
+            self._status,
             f"{_OK_MARK} TARGET {self._host} · {healthy_count}/{len(results)} SERVICES HEALTHY",
         )
-        self.query_one("#monitor-last-poll", Static).update(
+        self._set_static(
+            self._last_poll,
             f"LAST POLL · {stamp} UTC · CYCLE {self._poll_count}",
         )
-        events.write(f"[dim][POLL {self._poll_count}][/dim] {stamp} · {healthy_count}/{len(results)} OK")
+        self._log(f"[dim][POLL {self._poll_count}][/dim] {stamp} · {healthy_count}/{len(results)} OK")
 
     def _show_fatal(self, message: str) -> None:
         """Render an explicit error state — never a silent dead pane."""
-        self.query_one("#monitor-status", Static).update(f"{_ERROR_MARK} {message}")
-        self.query_one("#monitor-events", RichLog).write(f"{_ERROR_MARK} {message}")
+        self._set_static(self._status, f"{_ERROR_MARK} {message}")
+        self._log(f"{_ERROR_MARK} {message}")
+
+    def _is_live(self) -> bool:
+        """True while the pane's widgets are still attached.
+
+        The polling worker is cancelled when the screen is dismissed/unmounted,
+        but cancellation only fires at an ``await`` point. A poll that returns
+        from the health check mid-teardown must not touch widgets that are
+        already being pruned, so the worker checks this before every UI update.
+        """
+        return self._table is not None and self._table.is_attached
+
+    @staticmethod
+    def _set_static(widget: Static | None, markup: str) -> None:
+        """Update a cached Static, skipping it if already pruned (teardown)."""
+        if widget is not None and widget.is_attached:
+            widget.update(markup)
+
+    def _log(self, markup: str) -> None:
+        """Append to the cached event log, skipping it if already pruned."""
+        events = self._events
+        if events is not None and events.is_attached:
+            events.write(markup)
 
     @staticmethod
     def _describe(result: HealthCheckResult) -> str:

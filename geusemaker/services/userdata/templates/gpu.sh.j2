@@ -4,7 +4,7 @@
 
 echo "GPU Validation and Setup"
 
-{% if tier == "gpu" %}
+{% if workload == "gpu" %}
 # Verify NVIDIA GPU is present and drivers are loaded
 echo "Checking for NVIDIA GPU..."
 

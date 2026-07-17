@@ -117,14 +117,14 @@ def test_verify_requires_active_lease_hooks_and_event_targets() -> None:
     service._dynamodb = MagicMock()
     service._events = MagicMock()
     service._autoscaling.describe_auto_scaling_groups.return_value = {
-        "AutoScalingGroups": [{
-            "CapacityRebalance": True,
-            "DesiredCapacity": 1,
-            "Tags": [{"Key": "Stack", "Value": "stack"}],
-            "Instances": [{
-                "InstanceId": "i-1", "LifecycleState": "InService", "HealthStatus": "Healthy"
-            }],
-        }]
+        "AutoScalingGroups": [
+            {
+                "CapacityRebalance": True,
+                "DesiredCapacity": 1,
+                "Tags": [{"Key": "Stack", "Value": "stack"}],
+                "Instances": [{"InstanceId": "i-1", "LifecycleState": "InService", "HealthStatus": "Healthy"}],
+            }
+        ]
     }
     service._dynamodb.get_item.return_value = {"Item": {"Owner": {"S": "i-1"}}}
     service._autoscaling.describe_lifecycle_hooks.return_value = {

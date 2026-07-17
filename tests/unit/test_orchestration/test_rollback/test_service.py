@@ -5,8 +5,13 @@ from decimal import Decimal
 
 import pytest
 
-from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState
-from geusemaker.services.rollback.service import RollbackService
+from geusemaker.models import (
+    CostTracking,
+    DeploymentConfig,
+    DeploymentSnapshot,
+    DeploymentState,
+)
+from geusemaker.orchestration.rollback import RollbackService
 
 
 class StubStateManager:
@@ -72,9 +77,12 @@ def _state(instance_type: str = "t3.large") -> DeploymentState:
 
 def test_rollback_reverts_to_previous_state() -> None:
     state = _state()
-    previous_snapshot = state.model_dump()
-    previous_snapshot["config"]["instance_type"] = "t3.medium"
-    previous_snapshot["container_images"] = {"n8n": "n8nio/n8n:old"}
+    previous_snapshot = DeploymentSnapshot(
+        config=state.config.model_copy(update={"instance_type": "t3.medium"}),
+        container_images={"n8n": "n8nio/n8n:old"},
+        status=state.status,
+        created_at=state.updated_at,
+    )
     state.previous_states = [previous_snapshot]
 
     service = RollbackService(

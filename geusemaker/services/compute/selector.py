@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Literal
 
-from geusemaker.cli import console
-from geusemaker.cli.branding import EMOJI
 from geusemaker.models.compute import InstanceSelection
 from geusemaker.models.deployment import DeploymentConfig
 from geusemaker.services.compute.spot import SpotSelectionService
@@ -15,6 +14,8 @@ from geusemaker.services.compute.spot import SpotSelectionService
 if TYPE_CHECKING:
     from geusemaker.infra import AWSClientFactory
     from geusemaker.services.pricing import PricingService
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -104,17 +105,11 @@ class InstanceTypeSelector:
         region = region or self._region
         instance_types = self.GPU_INSTANCE_TYPES if compute_type == "gpu" else self.CPU_INSTANCE_TYPES
 
-        console.print(
-            f"{EMOJI['info']} Searching for best available {compute_type.upper()} instance...",
-            verbosity="info",
-        )
+        LOGGER.info(f"Searching for best available {compute_type.upper()} instance...")
 
         candidates: list[tuple[int, InstanceSelection, float]] = []
         for rank, instance_type in enumerate(instance_types):
-            console.print(
-                f"{EMOJI['info']} Checking {instance_type}...",
-                verbosity="debug",
-            )
+            LOGGER.debug(f"Checking {instance_type}...")
 
             # Create a temporary config to use spot selection service
             config = DeploymentConfig(
@@ -157,7 +152,7 @@ class InstanceTypeSelector:
             )
             for _, item, score in candidates[1:4]
         )
-        console.print(f"{EMOJI['check']} Selected {selection.instance_type} ({reason})", verbosity="info")
+        LOGGER.info(f"Selected {selection.instance_type} ({reason})")
 
         return InstanceTypeSelection(
             instance_type=selection.instance_type,

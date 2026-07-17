@@ -28,7 +28,9 @@ from geusemaker.services.destruction import DestructionService
     help="Optional state directory (default ~/.geusemaker).",
 )
 @output_option()
-def destroy(stack_name: str, force: bool, dry_run: bool, preserve_efs: bool, state_dir: str | None, output: str) -> None:
+def destroy(
+    stack_name: str, force: bool, dry_run: bool, preserve_efs: bool, state_dir: str | None, output: str
+) -> None:
     """Destroy an existing deployment."""
     output_format = OutputFormat(output.lower())
     manager = StateManager(base_path=Path(state_dir) if state_dir else None)
@@ -78,7 +80,9 @@ def destroy(stack_name: str, force: bool, dry_run: bool, preserve_efs: bool, sta
                 progress.update(task, description=msg)
 
             try:
-                result = service.destroy(state, dry_run=dry_run, preserve_efs=preserve_efs, progress_callback=update_progress)
+                result = service.destroy(
+                    state, dry_run=dry_run, preserve_efs=preserve_efs, progress_callback=update_progress
+                )
             except Exception as exc:  # noqa: BLE001
                 console.print(f"{EMOJI['error']} Destroy failed: {exc}", verbosity="error")
                 raise SystemExit(1)

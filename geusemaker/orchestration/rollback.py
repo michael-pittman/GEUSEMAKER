@@ -5,9 +5,10 @@ from __future__ import annotations
 from time import monotonic
 
 from geusemaker.infra import AWSClientFactory, StateManager
-from geusemaker.models import DeploymentState, RollbackRecord
+from geusemaker.models import DeploymentSnapshot, DeploymentState, RollbackRecord
 from geusemaker.models.rollback import RollbackResult
-from geusemaker.services.update import ContainerUpdater, InstanceUpdater
+from geusemaker.services.update.containers import ContainerUpdater
+from geusemaker.services.update.instance import InstanceUpdater
 
 
 class RollbackService:
@@ -42,9 +43,8 @@ class RollbackService:
 
         history = list(state.previous_states)
         target_snapshot = history[to_version - 1]
-        target_state = DeploymentState.model_validate(target_snapshot)
 
-        current_snapshot = state.model_dump()
+        current_snapshot = DeploymentSnapshot.from_state(state)
         history.insert(0, current_snapshot)
         state.previous_states = history[:5]
         state.status = "rolling_back"
@@ -52,17 +52,17 @@ class RollbackService:
 
         changes: list[str] = []
 
-        if target_state.config.instance_type != state.config.instance_type:
+        if target_snapshot.config.instance_type != state.config.instance_type:
             changes.extend(
-                self.instance_updater.update_instance_type(state, target_state.config.instance_type),
+                self.instance_updater.update_instance_type(state, target_snapshot.config.instance_type),
             )
 
-        if target_state.container_images != state.container_images:
-            state.container_images = dict(target_state.container_images)
+        if target_snapshot.container_images != state.container_images:
+            state.container_images = dict(target_snapshot.container_images)
             changes.append("container_images:rolled_back")
 
-        state.config = target_state.config
-        state.cost.instance_type = target_state.config.instance_type
+        state.config = target_snapshot.config
+        state.cost.instance_type = target_snapshot.config.instance_type
         state.last_healthy_state = target_snapshot
         state.status = "running"
 
