@@ -16,7 +16,7 @@
 |---------|------------|---------|
 | **Classes** | PascalCase | `DeploymentState`, `EC2Service` |
 | **Functions/Methods** | snake_case | `create_efs()`, `get_spot_price()` |
-| **Constants** | SCREAMING_SNAKE | `MAIN_BANNER`, `EMOJI`, `STAGE_ART` |
+| **Constants** | SCREAMING_SNAKE | `MAIN_BANNER`, `EMOJI`, `STAGE_GLYPHS` |
 | **Private methods** | `_prefix` | `_translate_aws_error()` |
 | **Async functions** | No special prefix | `async def deploy()` |
 | **Type aliases** | PascalCase | `ServiceName = Literal["n8n", "ollama", ...]` |
@@ -31,9 +31,9 @@ These rules are **MANDATORY** for AI agents and human developers:
 4. **🚫 NEVER store secrets in state files** - State files are plain JSON, no passwords/keys
 5. **✅ ALWAYS use Pydantic models** - No raw dicts for configuration or state
 6. **✅ ALWAYS validate inputs at boundaries** - CLI arguments, user prompts, file reads
-7. **✅ ALWAYS include emojis in user output** - Use `EMOJI` dict from branding.py
+7. **✅ Use semantic UI tokens** - Branding/stage assets and the shared brutalist theme; do not rely on emoji alone
 8. **✅ ALWAYS tag AWS resources** - Include `Stack: {stack_name}` tag on all resources
-9. **✅ ALWAYS use async for AWS calls** - Wrap with `asyncio.to_thread()` for blocking calls
+9. **✅ Use async for polling/monitoring** - Wrap blocking AWS calls with `asyncio.to_thread()` in monitoring, validation, and backup services
 10. **💾 EFS is MANDATORY** - Every deployment MUST include EFS for data persistence
 
 ## 12.4 Python Specifics

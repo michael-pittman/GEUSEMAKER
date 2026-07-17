@@ -75,8 +75,10 @@ geusemaker monitor start my-ai-stack --tui
 geusemaker tui --screen monitor --stack-name my-ai-stack
 ```
 
-Set `GEUSEMAKER_UI=tui` to route deploy or monitor commands to the TUI. The TUI is
-presentation-only; automation continues to use the existing CLI and JSON/YAML output.
+Set `GEUSEMAKER_UI=tui` to route deploy or monitor commands to the TUI. The TUI can
+build and execute deployments (a `ConfigBuilder`-backed form plus a live progress
+timeline and log streams); automation and scripting should still use the CLI and
+JSON/YAML output.
 
 ### 1. Interactive Mode (Default)
 
@@ -189,6 +191,9 @@ geusemaker logs my-ai-stack
 
 # Stream UserData logs in real-time (during deployment)
 geusemaker logs my-ai-stack --follow
+
+# Stream a container's logs in real-time (via SSM)
+geusemaker logs my-ai-stack --follow --service n8n
 
 # View specific service logs
 geusemaker logs my-ai-stack --service n8n --tail 200
@@ -376,7 +381,7 @@ The PostgreSQL password is auto-generated during deployment and stored on the in
 **Server-side** (after SSH to instance):
 ```bash
 # From the runtime environment file (recommended)
-grep POSTGRES_PASSWORD /mnt/efs/runtime.env
+grep POSTGRES_PASSWORD /root/runtime.env
 
 # Or from the PostgreSQL container directly
 docker exec postgres printenv POSTGRES_PASSWORD
@@ -385,7 +390,7 @@ docker exec postgres printenv POSTGRES_PASSWORD
 **From your local machine** (via SSH):
 ```bash
 PUBLIC_IP=$(geusemaker status <stack-name> --output json | jq -r '.data.instance.public_ip')
-ssh -i ~/.ssh/key.pem ubuntu@$PUBLIC_IP "grep POSTGRES_PASSWORD /mnt/efs/runtime.env"
+ssh -i ~/.ssh/key.pem ubuntu@$PUBLIC_IP "grep POSTGRES_PASSWORD /root/runtime.env"
 # Use ec2-user@ for Amazon Linux instead of ubuntu@
 ```
 
@@ -397,7 +402,7 @@ INSTANCE_ID=$(geusemaker status <stack-name> --output json | jq -r '.data.instan
 CMD_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["grep POSTGRES_PASSWORD /mnt/efs/runtime.env"]' \
+  --parameters 'commands=["grep POSTGRES_PASSWORD /root/runtime.env"]' \
   --query "Command.CommandId" --output text)
 
 # Get the output (wait a few seconds for execution)
@@ -426,14 +431,14 @@ If you need to connect n8n to Crawl4AI, create manually:
 
 n8n automatically generates an encryption key (`N8N_ENCRYPTION_KEY`) during deployment to securely store credentials. This key is:
 - Generated automatically (32 random bytes)
-- Stored in `/mnt/efs/runtime.env` on the EC2 instance
+- Stored in `runtime.env` next to `docker-compose.yml` on the instance (`/root/runtime.env`, or `/opt/geusemaker/runtime/runtime.env` with the runtime bundle)
 - Used to encrypt all credentials stored in n8n workflows
 - **Critical**: If you lose this key, you cannot decrypt existing credentials
 
 **To view the encryption key** (if needed for backup):
 ```bash
 ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
-grep N8N_ENCRYPTION_KEY /mnt/efs/runtime.env
+grep N8N_ENCRYPTION_KEY /root/runtime.env
 ```
 
 **⚠️ Security Note**: Keep the encryption key secure. If you need to migrate n8n data, you must preserve this key.
@@ -457,9 +462,9 @@ tail -100 /var/log/geusemaker-userdata.log | grep -i credential
 - **Import failed**: Check `/var/log/geusemaker-userdata.log` for the CLI output
 
 **Manual credential creation** (if automatic preloading failed):
-1. Log into n8n: `http://<public-ip>:5678`
+1. Log into n8n: `https://<public-ip>/` (n8n is proxied at the root path by NGINX; port 5678 is localhost-only)
 2. Go to **Credentials** → **Add Credential**
-3. Add **PostgreSQL** with connection details above (password from `/mnt/efs/runtime.env`)
+3. Add **PostgreSQL** with connection details above (password from `/root/runtime.env`)
 4. Add **Ollama** with base URL `http://ollama:11434`
 
 ### Cost Tracking
@@ -520,7 +525,7 @@ geusemaker deploy \
   --vpc-id vpc-123456 \
   --attach-internet-gateway
 
-# Reuse security group (must have ports 22, 80, 5678, 2049)
+# Reuse security group (must have ports 22, 80, 2049; service ports like 5678 are localhost-only behind NGINX)
 geusemaker deploy \
   --security-group-id sg-345678
 ```
@@ -579,8 +584,8 @@ ssh -i ~/.ssh/key.pem ec2-user@<public-ip>
 tail -f /var/log/geusemaker/model-preload.log
 
 # Or via CLI (requires SSM access)
-# Note: model-preload.log is not directly accessible via geusemaker logs
-# Use SSH or check userdata logs for model preload status
+# Note: model-preload.log is not accessible via `geusemaker logs`
+# Use the TUI Logs screen (streams it over SSM), SSM Run Command, or SSH
 ```
 
 ### EFS Mount Problems

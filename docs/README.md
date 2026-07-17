@@ -10,7 +10,7 @@ the current implementation.
 - [Product requirements](prd/index.md) — canonical, sectioned PRD.
 - [Architecture](architecture/index.md) — canonical, sectioned architecture reference.
 - [Instance recommendations](instance-recommendation.md) — topology, workload, and ranking policies.
-- [TUI rollout](tui-brutalist-rollout.md) — implemented shell and remaining rollout work.
+- [TUI rollout](tui-brutalist-rollout.md) — implemented TUI shell and wizard polish backlog.
 
 ## Delivery records
 
@@ -28,7 +28,6 @@ labels are historical unless the summary explicitly says otherwise.
 - [Maintenance scripts](../scripts/README.md)
 - [n8n workflows](../Workflows/README.md)
 - [Sample configuration](../config/README.md)
-- [Stack-specific spot automation design](spot-instance-automation-nga.md)
 
 ## Historical snapshots
 

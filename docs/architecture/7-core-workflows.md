@@ -20,7 +20,7 @@ sequenceDiagram
 
     U->>CLI: geusemaker deploy my-stack --tier dev
     CLI->>UI: Show MAIN_BANNER
-    UI-->>U: 🎉 GeuseMaker 2000 banner
+    UI-->>U: GeuseMaker MAIN_BANNER
 
     CLI->>O: deploy(config)
     O->>S: Check existing stack
@@ -92,6 +92,8 @@ sequenceDiagram
 ## 7.2 Interactive Deployment Flow
 
 **🔍 User-guided resource discovery and configuration**
+
+> Illustrative pseudocode. The real path is `InteractiveFlow`/`Dialogs` + `ConfigBuilder` → `DeploymentRunner` (there is no `DeploymentUI` class).
 
 ```python
 async def run_interactive_deployment(console: Console) -> DeploymentConfig:
@@ -312,6 +314,8 @@ sequenceDiagram
 ## 7.5 Health Monitoring Workflow
 
 **💚 Continuous service health validation**
+
+> Illustrative pseudocode. The real path uses `HealthMonitor` / `check_all_services` and the `HealthCheckClient` (there is no `DeploymentUI` class).
 
 ```python
 async def health_monitoring_loop(

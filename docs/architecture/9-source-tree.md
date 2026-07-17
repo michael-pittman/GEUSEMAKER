@@ -12,8 +12,9 @@ GEUSEMAKER/
 │   │   ├── components/        # Dialogs, tables, messages, stages, theme
 │   │   ├── display/           # Rich renderers for domain results
 │   │   ├── interactive/       # Quick/advanced deployment wizard and runner
+│   │   ├── configuration/     # UI-neutral DeploymentDraft + ConfigBuilder + YAML round-trip
 │   │   ├── output/            # Text/JSON/YAML and verbosity contracts
-│   │   ├── tui/               # Optional lazy-loaded Textual shell
+│   │   ├── tui/               # Optional lazy-loaded Textual shell (splash + Inspect/Monitor/Deploy/Logs screens)
 │   │   ├── branding.py        # Product marks and stage glyphs
 │   │   ├── main.py            # Root Click application
 │   │   └── progress_events.py # UI-neutral progress contract
@@ -40,7 +41,7 @@ GEUSEMAKER/
 │   │   ├── update/            # Instance/container updates
 │   │   ├── userdata/          # EC2 bootstrap generation
 │   │   └── validation/        # Pre/post-deployment checks
-│   └── utils/                 # Small shared utilities
+│   └── utils/                 # Placeholder (currently empty)
 ├── tests/                     # Unit tests mirroring package boundaries
 ├── config/                    # Version-controlled configuration examples
 ├── docs/

@@ -17,7 +17,7 @@ python3.12 -m venv venv && source venv/bin/activate && pip install -e ".[dev]"
 # Lint and Test
 ./scripts/lint.sh              # ruff check + format + mypy
 ./scripts/test.sh              # Run all tests
-pytest tests/unit/test_<module>.py::test_function_name -v  # Single test
+pytest tests/unit/test_<area>/test_<module>.py::test_function_name -v  # Single test
 pytest --cov=geusemaker --cov-report=term-missing           # With coverage
 
 # Build runtime bundle
@@ -54,15 +54,17 @@ geusemaker cleanup | backup | restore | init | info
 - `cli/components/` - Reusable UI components (dialogs, messages, progress, tables, theme)
 - `cli/display/` - Output formatters (cost, discovery, health, listing, monitor, pricing, validation)
 - `cli/interactive/` - Interactive wizard flows and prompts
+- `cli/configuration/` - UI-neutral `DeploymentDraft`/`ConfigBuilder` shared by the wizard and the TUI deploy form (YAML round-trip)
 - `cli/output/` - Verbosity control (`VerbosityConsole`)
-- `cli/tui/` - Optional, lazy-loaded Textual shell
+- `cli/tui/` - Optional, lazy-loaded Textual shell (splash + operational Inspect/Monitor/Deploy/Logs screens)
 - `cli/progress_events.py` - UI-neutral progress event contract
 - `cli/branding.py` - Banners (`MAIN_BANNER`, `DEPLOY_BANNER`) and `EMOJI` dict
 
 ## MCP Tools
 
-**aws-documentation**: Search AWS docs, read pages, get recommendations
-**aws-pricing**: Get real-time pricing, generate cost reports, compare regions
+Provided by the `aws-dev-toolkit` plugin (not repo-configured MCP):
+**awsknowledge**: Search/read AWS docs, get recommendations
+**awspricing**: Get real-time pricing, generate cost reports, compare regions
 
 ## Tech Stack
 
@@ -87,7 +89,7 @@ geusemaker/
 │   ├── cli/              # Click/Rich CLI plus optional Textual TUI
 │   ├── orchestration/    # Deployment workflows (tier1, tier2, tier3, errors)
 │   ├── services/         # AWS resource managers (30+ services across subdirectories)
-│   ├── models/           # Pydantic models (70+ models, barrel-exported)
+│   ├── models/           # Pydantic models (50+ models, barrel-exported)
 │   ├── infra/            # Boto3 clients, state persistence, migrations
 │   ├── config/           # ConfigLoader, schema, env var mapping
 │   ├── runtime_assets/   # Docker compose, EFS utils, bundled images
@@ -171,7 +173,9 @@ from geusemaker.models import DeploymentConfig, DeploymentState, VPCInfo
 from geusemaker.services import EC2Service, EFSService, IAMService
 ```
 
-**Core services**: EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, ALBService, CloudFrontService, SSMService, ACMService, Route53Service, DestructionService, StateRecoveryService, RollbackService, BackupService
+**Core services** (top-level barrel): EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, ALBService, CloudFrontService, SSMService, DestructionService, StateRecoveryService, RollbackService, BackupService, SpotAutomationService, InstanceResolver
+
+**Not in the top-level barrel** (import from submodules): `ACMService`/`Route53Service` (`geusemaker.services.acm`/`.route53`), `Route53DiscoveryService` (`geusemaker.services.discovery`), `HealthMonitor` (`geusemaker.services.monitoring`)
 
 **Discovery services**: VPCDiscoveryService, EFSDiscoveryService, ALBDiscoveryService, CloudFrontDiscoveryService, SecurityGroupDiscoveryService, KeyPairDiscoveryService, Route53DiscoveryService
 
@@ -316,7 +320,7 @@ proxy_pass http://n8n:5678;  # Container name doesn't resolve on host
 
 ### UserData Generation
 
-**Templates** ([userdata/templates/](geusemaker/services/userdata/templates/)): base.sh.j2, docker.sh.j2, efs.sh.j2, services.sh.j2, healthcheck.sh.j2, gpu.sh.j2, n8n-credentials.sh.j2, nginx-setup.sh.j2, nginx-ssl.conf.j2, ollama-models.sh.j2
+**Templates** ([userdata/templates/](geusemaker/services/userdata/templates/)): base.sh.j2, docker.sh.j2, efs.sh.j2, services.sh.j2, healthcheck.sh.j2, gpu.sh.j2, n8n-credentials.sh.j2, nginx-setup.sh.j2, nginx-reverse-proxy.conf.j2, nginx-ssl.conf.j2, ollama-models.sh.j2, spot-protection.sh.j2
 
 **Generator**:
 ```python
@@ -356,15 +360,15 @@ Scans EC2 instances with `Stack` tag, reconstructs state from metadata, saves to
 
 **Log locations on EC2**:
 - UserData: `/var/log/geusemaker-userdata.log` (`geusemaker logs <stack> [--follow]`)
-- Model preload: `/var/log/geusemaker/model-preload.log` (SSH only)
-- EFS mount: `/var/log/amazon/efs/mount.log` (SSH only)
-- Containers: `geusemaker logs <stack> --service <name> --tail 200`
+- Model preload: `/var/log/geusemaker/model-preload.log` (TUI Logs screen via SSM, or SSH; not via `geusemaker logs`)
+- EFS mount: `/var/log/amazon/efs/mount.log` (TUI Logs screen via SSM, or SSH; not via `geusemaker logs`)
+- Containers: `geusemaker logs <stack> --service <name> [--tail 200 | --follow]`
 
 **Services**: userdata, n8n, ollama, qdrant, crawl4ai, postgres
 
 **Health checks**: `geusemaker status <stack>` (HTTP health for n8n/Qdrant/Ollama/Crawl4AI, TCP for PostgreSQL)
 
-**Implementation**: SSM-based log streaming ([ssm.py:212-259](geusemaker/services/ssm.py#L212-L259)), polls every 2s
+**Implementation**: SSM-based log streaming in `geusemaker/services/ssm.py` — `stream_userdata_logs` (userdata), `tail_file` (arbitrary instance log files, byte-offset resume), `follow_container_logs` (docker `--since` polling), all polling every 2s
 
 **Requirements**: SSM agent running, IAM role with `AmazonSSMManagedInstanceCore`
 
