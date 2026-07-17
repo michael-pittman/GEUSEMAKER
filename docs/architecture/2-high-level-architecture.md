@@ -33,7 +33,7 @@ EC2 UserData Script:
 GeuseMaker implements a **CLI-driven infrastructure orchestration architecture** built on Python with Boto3 for direct AWS API interaction. The system follows a **layered service architecture** with clear separation between:
 - **UI Layer**: Rich-powered interactive CLI with real-time feedback
 - **Orchestration Layer**: Deployment coordinators managing multi-resource workflows
-- **Service Layer**: AWS resource managers (EC2, VPC, EFS, ALB, CloudFront)
+- **Service Layer**: AWS resource managers (EC2, VPC, EFS, ALB, CloudFront) and UserData/EC2 bootstrap generation (`services/userdata/`)
 - **Infrastructure Layer**: Boto3 clients, state persistence, Docker log streaming
 
 Key architectural characteristics:
@@ -95,13 +95,13 @@ graph TB
         SG_SVC[Security Group Service]
         ALB_SVC[ALB Service]
         CF_SVC[CloudFront Service]
+        USERDATA[UserData Generator<br/>EFS Mount + Docker]
     end
 
     subgraph "Infrastructure Layer"
         BOTO[Boto3 Clients]
-        STATE[State Manager<br/>~/.geusemaker/*.json]
+        STATE[State Manager<br/>~/.geusemaker/deployments/*.json]
         CONFIG[Pydantic Config<br/>Validation]
-        USERDATA[UserData Generator<br/>EFS Mount + Docker]
     end
 
     subgraph "AWS Cloud"

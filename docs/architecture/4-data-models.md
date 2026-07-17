@@ -39,7 +39,7 @@ class DeploymentConfig(BaseModel):
 
 ## 4.2 DeploymentState
 
-**Purpose:** Tracks deployed resources, status, rollback history, and cost - persisted to `~/.geusemaker/<stack>.json`
+**Purpose:** Tracks deployed resources, status, rollback history, and cost - persisted to `~/.geusemaker/deployments/<stack_name>.json`
 
 ```python
 class RollbackRecord(BaseModel):

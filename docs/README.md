@@ -18,6 +18,7 @@ the current implementation.
 - [Epics](epics/) — feature-level delivery records.
 - [Stories](stories/) — detailed acceptance criteria and implementation notes.
 - [Analysis](analysis/) — focused technical reviews.
+  - [Architecture heuristics remediation plan](analysis/architecture-heuristics-remediation-plan.md) — layering, workload/tier, and orchestrator cleanup plan.
 
 These records describe decisions at the time they were written. Their status
 labels are historical unless the summary explicitly says otherwise.

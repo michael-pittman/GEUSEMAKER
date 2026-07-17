@@ -103,7 +103,7 @@ geusemaker/
 
 1. **NEVER hardcode AWS credentials** - Use `boto3.Session()`
 2. **NEVER use `print()`** - Use `console.print()` from Rich
-3. **NEVER catch bare `Exception`** - Catch specific exceptions
+3. **Catch specific exceptions by default** - Blind `except Exception` is permitted ONLY in best-effort cleanup/rollback/monitoring paths, and MUST carry `# noqa: BLE001` with a one-line reason
 4. **NEVER store secrets in state files** - Plain JSON only
 5. **ALWAYS use Pydantic models** - No raw dicts
 6. **ALWAYS validate inputs** - CLI args, user prompts, file reads
@@ -146,7 +146,7 @@ geusemaker/
 
 ## State Management
 
-**Location**: `~/.geusemaker/<stack_name>.json` (version 2)
+**Location**: `~/.geusemaker/deployments/<stack_name>.json` (version 2; `StateManager` also owns sibling `config/`, `cache/`, `archive/`, and `backups/` dirs under `~/.geusemaker/`)
 **Contains**: Config, resource IDs, cost tracking, rollback records
 **Usage**: Always use `StateManager` to load/save state (uses `filelock` for concurrent access)
 **Migrations**: `geusemaker/infra/migrations/` handles version upgrades (e.g., v1_to_v2)
@@ -173,7 +173,9 @@ from geusemaker.models import DeploymentConfig, DeploymentState, VPCInfo
 from geusemaker.services import EC2Service, EFSService, IAMService
 ```
 
-**Core services** (top-level barrel): EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, ALBService, CloudFrontService, SSMService, DestructionService, StateRecoveryService, RollbackService, BackupService, SpotAutomationService, InstanceResolver
+**Core services** (top-level barrel): EC2Service, EFSService, IAMService, VPCService, SecurityGroupService, ALBService, CloudFrontService, SSMService, DestructionService, StateRecoveryService, BackupService, SpotAutomationService, InstanceResolver
+
+**Orchestration coordinators** (import from orchestration, NOT services): `from geusemaker.orchestration import UpdateOrchestrator, RollbackService` — these are multi-resource workflow coordinators and live in the orchestration layer. Their resource operators (`InstanceUpdater`, `ContainerUpdater`) remain services.
 
 **Not in the top-level barrel** (import from submodules): `ACMService`/`Route53Service` (`geusemaker.services.acm`/`.route53`), `Route53DiscoveryService` (`geusemaker.services.discovery`), `HealthMonitor` (`geusemaker.services.monitoring`)
 
@@ -181,7 +183,7 @@ from geusemaker.services import EC2Service, EFSService, IAMService
 
 **Cost/Compute services**: CostEstimator, CostReportService, BudgetService, ResourceTagger, PricingService, SpotSelectionService
 
-**Update services**: UpdateOrchestrator, InstanceUpdater, ContainerUpdater
+**Update services**: InstanceUpdater, ContainerUpdater (resource operators; the `UpdateOrchestrator` coordinator now lives in `geusemaker.orchestration`)
 
 **Health/Monitoring**: HealthCheckClient, check_all_services, HealthMonitor, OrphanDetector
 

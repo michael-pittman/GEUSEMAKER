@@ -6,18 +6,35 @@ GeuseMaker uses **JSON file-based state persistence** instead of a traditional d
 
 ```
 ~/.geusemaker/
-├── deployments/                    # Active deployment states
+├── deployments/                    # Active deployment states (StateManager)
 │   ├── my-stack.json              # Individual stack state
 │   ├── prod-ai.json
 │   └── dev-test.json
-├── config/                         # User configuration
+├── config/                         # User configuration (StateManager)
 │   └── settings.json
-├── cache/                          # Temporary cache data
+├── cache/                          # Temporary cache data (StateManager)
 │   ├── pricing.json               # Cached spot prices (TTL: 5min)
 │   └── vpcs.json                  # Cached VPC discovery (TTL: 1hr)
-└── logs/                           # Operation logs
-    └── 2024-01-15.log
+├── archive/                        # Archived state snapshots (StateManager)
+├── backups/                        # Pre-write compressed state backups (StateManager)
+│   └── <stack>/*.json.gz
+├── monitoring/                     # Monitor PID files (NOT StateManager)
+│   └── <stack>.pid
+└── logs/                           # Operation + health-event logs (NOT StateManager)
+    ├── 2024-01-15.log
+    ├── <stack>.monitor.out.log    # Background monitor stdout
+    └── <stack>.monitor.err.log    # Background monitor stderr
 ```
+
+**Persistence ownership.** `deployments/`, `config/`, `cache/`, `archive/`, and
+`backups/` are owned by `StateManager` (`infra/state.py`), which uses `filelock` for
+concurrent-safe writes. The `monitoring/` and `logs/` directories are **intentionally
+managed outside `StateManager`**: the `geusemaker monitor` command
+(`cli/commands/monitor.py`, `PID_DIR = ~/.geusemaker/monitoring`,
+`DEFAULT_LOG_DIR = ~/.geusemaker/logs`) writes PID files and health-event/background logs
+directly, since monitor process liveness and streaming log output are operational
+telemetry, not versioned deployment state. This ad-hoc I/O is by design and should not be
+migrated into `StateManager`.
 
 ## 8.2 Deployment State Schema
 

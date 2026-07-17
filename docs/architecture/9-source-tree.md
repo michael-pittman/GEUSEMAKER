@@ -68,6 +68,15 @@ GEUSEMAKER/
 | `models/` | Validated immutable data contracts | Network calls |
 | `runtime_assets/` | Files shipped to deployed instances | Developer-only cache files |
 
+**Update/rollback coordinators.** `UpdateOrchestrator` (`orchestration/update.py`) and
+`RollbackService` (`orchestration/rollback.py`) are multi-resource **workflow coordinators**
+and now live under `orchestration/` — import them via `from geusemaker.orchestration import
+UpdateOrchestrator, RollbackService`. Their resource operators `InstanceUpdater` and
+`ContainerUpdater` remain in `services/update/` (imported by the coordinators via concrete
+submodules to keep the `orchestration → services` dependency one-directional). This relocation
+is DONE; new multi-resource deploy workflows likewise belong under `orchestration/`, not
+`services/`.
+
 ## 9.2 Important entry points
 
 | File | Purpose |

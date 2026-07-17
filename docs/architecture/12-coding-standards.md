@@ -36,6 +36,34 @@ These rules are **MANDATORY** for AI agents and human developers:
 9. **✅ Use async for polling/monitoring** - Wrap blocking AWS calls with `asyncio.to_thread()` in monitoring, validation, and backup services
 10. **💾 EFS is MANDATORY** - Every deployment MUST include EFS for data persistence
 
-## 12.4 Python Specifics
+## 12.4 Service Class Pattern: BaseService vs. Facades
 
-```python
+Two distinct service shapes coexist under `services/`; do not force one into the other.
+
+**BaseService subclasses (own a raw boto3 client).** Any class that makes direct
+boto3 API calls MUST inherit from `geusemaker.services.base.BaseService` for automatic
+error wrapping (`ClientError` → `RuntimeError`) and client caching. Examples: `EC2Service`,
+`EFSService`, `IAMService`, `VPCService`, `SecurityGroupService`, `ALBService`,
+`CloudFrontService`, `ACMService`, `Route53Service`, `SSMService`, `SpotAutomationService`,
+`InstanceResolver`, `StateRecoveryService`, and every `discovery/`, `pricing/`, and
+`compute/` resource manager (`ResourceTagger`, `PreDeploymentValidator`, etc.).
+
+**Facades (compose typed services / helpers — intentionally NOT BaseService).** These
+orchestrate other services and helpers rather than owning a raw boto3 client, so they do
+not subclass `BaseService`. This is deliberate and correct:
+
+| Facade | Location | Composes |
+|---|---|---|
+| `DestructionService` | `services/destruction/service.py` | EC2/EFS/SG/IAM/ALB/CloudFront/ACM/Route53/Spot services |
+| `UpdateOrchestrator` | `services/update/orchestrator.py` | Instance/container update collaborators |
+| `RollbackService` | `services/rollback/service.py` | Destruction + state services |
+| `CostEstimator` / `CostReportService` | `services/cost/` | Pricing services + state |
+| `BackupService` | `services/backup/service.py` | StateManager + archive helpers |
+| `HealthMonitor` | `services/monitoring/monitor.py` | `HealthCheckClient` + notifiers |
+| `UserDataGenerator` | `services/userdata/generator.py` | Jinja2 templates (no AWS calls) |
+
+**Rule:** If a facade ever starts making direct boto3 calls (owning a raw client), it
+SHOULD then subclass `BaseService` to inherit error wrapping and caching. Note that
+`DestructionService` keeps a couple of raw clients (`ec2`, `elbv2`) for bulk teardown calls
+but remains a facade because its primary role is composing typed services; new raw-client
+services should follow the BaseService pattern instead.
