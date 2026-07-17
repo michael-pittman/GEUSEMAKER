@@ -23,6 +23,7 @@ from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.services.ec2 import EC2Service
 from geusemaker.services.health import HealthCheckClient
 from geusemaker.services.health.services import NGINX_ROUTES
+from geusemaker.services.instance_resolver import InstanceResolver
 
 
 @click.command("status")
@@ -65,7 +66,9 @@ def status(stack_name: str, state_dir: str | None, output: str) -> None:
     ec2_service = EC2Service(client_factory, region=state.config.region)
 
     try:
-        instance_desc = ec2_service.describe_instance(state.instance_id)
+        active_instance = InstanceResolver(client_factory, region=state.config.region).resolve(state)
+        state_manager.save_deployment_sync(state)
+        instance_desc = ec2_service.describe_instance(active_instance.instance_id)
         instance_state = instance_desc.get("State", {}).get("Name", "unknown")
         instance_type = instance_desc.get("InstanceType", state.config.instance_type)
         public_ip = instance_desc.get("PublicIpAddress")

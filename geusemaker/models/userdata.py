@@ -65,3 +65,22 @@ class UserDataConfig(BaseModel):
         default=True,
         description="Preload Ollama models after deployment (runs in background, non-blocking). Default: true.",
     )
+    spot_protection_enabled: bool = Field(
+        default=False,
+        description="Install production Spot lease and interruption protection.",
+    )
+    spot_lease_table_name: str | None = Field(default=None, description="DynamoDB active-node lease table.")
+    spot_auto_scaling_group_name: str | None = Field(default=None, description="Owning Auto Scaling group.")
+    spot_target_group_arn: str | None = Field(
+        default=None,
+        description="Optional ALB target group; when omitted the guard discovers it from the ASG.",
+    )
+    spot_log_group_name: str | None = Field(default=None, description="CloudWatch log group for structured Spot events.")
+    spot_termination_hook_name: str | None = Field(
+        default=None,
+        description="Optional ASG termination lifecycle hook completed after draining.",
+    )
+    spot_launch_hook_name: str | None = Field(
+        default=None,
+        description="Optional ASG launch lifecycle hook completed after the active lease is acquired.",
+    )

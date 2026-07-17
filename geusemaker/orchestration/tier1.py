@@ -285,8 +285,27 @@ class Tier1Orchestrator:
         iam_info = self._create_iam_resources(config)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "IAM setup")
 
+        if config.tier in {"automation", "gpu"} and selection.is_spot:
+            account_id = iam_info["role_arn"].split(":")[4]
+            lease_table_name = f"{config.stack_name}-spot-lease"[:255]
+            log_group_name = f"/geusemaker/{config.stack_name}/spot-events"
+            self.iam_service.attach_spot_runtime_policy(
+                iam_info["role_name"],
+                lease_table_arn=(
+                    f"arn:aws:dynamodb:{self.region}:{account_id}:table/{lease_table_name}"
+                ),
+                log_group_arn=(
+                    f"arn:aws:logs:{self.region}:{account_id}:log-group:{log_group_name}"
+                ),
+            )
+
         # Step 6: Generate UserData script
-        userdata_payload, postgres_password = self._generate_userdata(config, efs_id, mt_ip)
+        userdata_payload, postgres_password = self._generate_userdata(
+            config,
+            efs_id,
+            mt_ip,
+            spot_protection_enabled=(config.tier in {"automation", "gpu"} and selection.is_spot),
+        )
         self._check_timeout(start_time, config.rollback_timeout_minutes, "UserData generation")
 
         # Step 7: Launch EC2 instance with IAM instance profile
@@ -625,7 +644,14 @@ class Tier1Orchestrator:
             "profile_arn": profile_arn,
         }
 
-    def _generate_userdata(self, config: DeploymentConfig, efs_id: str, mt_ip: str) -> tuple[bytes, str]:
+    def _generate_userdata(
+        self,
+        config: DeploymentConfig,
+        efs_id: str,
+        mt_ip: str,
+        *,
+        spot_protection_enabled: bool = False,
+    ) -> tuple[bytes, str]:
         """
         Generate UserData script for EC2 instance initialization.
 
@@ -680,6 +706,16 @@ class Tier1Orchestrator:
             postgres_password=postgres_password,
             use_runtime_bundle=config.use_runtime_bundle,
             runtime_bundle_path=config.runtime_bundle_path,
+            spot_protection_enabled=spot_protection_enabled,
+            spot_lease_table_name=(f"{config.stack_name}-spot-lease"[:255] if spot_protection_enabled else None),
+            spot_auto_scaling_group_name=(f"{config.stack_name}-spot-asg" if spot_protection_enabled else None),
+            spot_log_group_name=(
+                f"/geusemaker/{config.stack_name}/spot-events" if spot_protection_enabled else None
+            ),
+            spot_launch_hook_name=(f"{config.stack_name[:42]}-launch" if spot_protection_enabled else None),
+            spot_termination_hook_name=(
+                f"{config.stack_name[:39]}-terminate" if spot_protection_enabled else None
+            ),
         )
         userdata_script = self.userdata_generator.generate(userdata_config)
         userdata_payload = self._compress_userdata(userdata_script)
@@ -782,6 +818,10 @@ class Tier1Orchestrator:
                 "auto_scaling_group_name": resources.auto_scaling_group_name,
                 "spot_event_log_group": resources.log_group_name,
                 "spot_event_rule_names": list(resources.event_rule_names),
+                "spot_lease_table_name": resources.lease_table_name,
+                "spot_lifecycle_hook_names": list(resources.lifecycle_hook_names),
+                "spot_coordinator_function_name": resources.coordinator_function_name,
+                "spot_coordinator_role_name": resources.coordinator_role_name,
             }
 
         # Launch instance with IAM instance profile for EFS mount
@@ -981,6 +1021,10 @@ class Tier1Orchestrator:
             auto_scaling_group_name=instance_info.get("auto_scaling_group_name"),
             spot_event_log_group=instance_info.get("spot_event_log_group"),
             spot_event_rule_names=instance_info.get("spot_event_rule_names", []),
+            spot_lease_table_name=instance_info.get("spot_lease_table_name"),
+            spot_lifecycle_hook_names=instance_info.get("spot_lifecycle_hook_names", []),
+            spot_coordinator_function_name=instance_info.get("spot_coordinator_function_name"),
+            spot_coordinator_role_name=instance_info.get("spot_coordinator_role_name"),
             keypair_name=config.keypair_name or "",
             public_ip=public_ip,
             private_ip=private_ip,

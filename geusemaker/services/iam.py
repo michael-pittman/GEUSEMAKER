@@ -53,7 +53,15 @@ class IAMService(BaseService):
                         "elasticfilesystem:ClientRootAccess",
                     ],
                     "Resource": "*",
-                }
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "elasticfilesystem:DescribeFileSystems",
+                        "elasticfilesystem:DescribeMountTargets",
+                    ],
+                    "Resource": "*",
+                },
             ],
         }
 
@@ -142,6 +150,60 @@ class IAMService(BaseService):
             return resp["InstanceProfile"]["Arn"]  # type: ignore[no-any-return]
 
         return self._safe_call(_call)
+
+    def attach_spot_runtime_policy(
+        self,
+        role_name: str,
+        *,
+        lease_table_arn: str,
+        log_group_arn: str,
+        target_group_arn: str | None = None,
+    ) -> None:
+        """Grant a production instance only the permissions used by its Spot guard."""
+        policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+                    "Resource": lease_table_arn,
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                    "Resource": f"{log_group_arn}:*",
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["elasticloadbalancing:DeregisterTargets"],
+                    "Resource": target_group_arn or "*",
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["autoscaling:DescribeLoadBalancerTargetGroups"],
+                    "Resource": "*",
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "autoscaling:CompleteLifecycleAction",
+                        "autoscaling:SetInstanceProtection",
+                        "autoscaling:TerminateInstanceInAutoScalingGroup",
+                    ],
+                    "Resource": "*",
+                    "Condition": {"StringEquals": {"autoscaling:ResourceTag/ManagedBy": "GeuseMaker"}},
+                },
+            ],
+        }
+
+        def _call() -> None:
+            self._iam.put_role_policy(
+                RoleName=role_name,
+                PolicyName="GeuseMakerSpotRuntimePolicy",
+                PolicyDocument=json.dumps(policy),
+            )
+
+        self._safe_call(_call)
 
     def attach_role_to_profile(self, profile_name: str, role_name: str) -> None:
         """Attach an IAM role to an instance profile.

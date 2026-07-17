@@ -29,6 +29,7 @@ def test_tier3_orchestrator_creates_cloudfront_with_alb() -> None:
         instance_type="g4dn.xlarge",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -96,6 +97,7 @@ def test_tier3_orchestrator_accepts_gpu_tier() -> None:
         instance_type="g4dn.xlarge",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -128,6 +130,7 @@ def test_tier3_orchestrator_accepts_automation_tier() -> None:
         instance_type="t3.medium",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()
@@ -160,6 +163,7 @@ def test_tier3_orchestrator_n8n_url_uses_cloudfront_domain() -> None:
         instance_type="g4dn.xlarge",
         enable_alb=True,
         enable_https=False,
+        use_spot=False,
     )
 
     state_manager = StubStateManager()

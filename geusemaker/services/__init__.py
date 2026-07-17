@@ -33,6 +33,7 @@ from geusemaker.services.health import (
     check_qdrant,
 )
 from geusemaker.services.iam import IAMService
+from geusemaker.services.instance_resolver import InstanceResolver, ResolvedInstance
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.rollback import RollbackService
 from geusemaker.services.sg import SecurityGroupService
@@ -52,6 +53,8 @@ __all__ = [
     "EC2Service",
     "EFSService",
     "IAMService",
+    "InstanceResolver",
+    "ResolvedInstance",
     "HealthCheckClient",
     "check_all_services",
     "check_n8n",

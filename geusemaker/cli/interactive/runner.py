@@ -21,6 +21,7 @@ from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3
 from geusemaker.services.acm import ACMService
 from geusemaker.services.compute.spot import SpotSelectionService
 from geusemaker.services.cost import BudgetService, CostEstimator
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.route53 import Route53Service
 from geusemaker.services.ssm import SSMService
@@ -47,7 +48,7 @@ class DeploymentRunner:
 
     def _stream_userdata_logs(self, state: DeploymentState) -> None:
         """Stream UserData initialization logs in real time from the deployed instance."""
-        if not state.instance_id:
+        if not state.instance_id and not getattr(state, "auto_scaling_group_name", None):
             return
 
         # Machine output reserves stdout for one structured document; the Rich Live
@@ -58,6 +59,8 @@ class DeploymentRunner:
         ssm_service = SSMService(self.client_factory, region=state.config.region)
 
         try:
+            instance_id = InstanceResolver(self.client_factory, region=state.config.region).resolve(state).instance_id
+            self.state_manager.save_deployment_sync(state)
             console.print(
                 f"\n{EMOJI['info']} Streaming UserData initialization logs...",
                 verbosity="info",
@@ -77,7 +80,7 @@ class DeploymentRunner:
             # Use Live context to update panel with streaming logs
             with Live(panel, console=console, refresh_per_second=4) as live:
                 for log_line in ssm_service.stream_userdata_logs(
-                    instance_id=state.instance_id,
+                    instance_id=instance_id,
                     poll_interval=2.0,
                     timeout_seconds=600,
                 ):
@@ -99,7 +102,7 @@ class DeploymentRunner:
             # The stream also ends on error-guard detection or timeout, so check the
             # actual outcome instead of unconditionally declaring success.
             try:
-                final_status = ssm_service.get_userdata_status(state.instance_id)
+                final_status = ssm_service.get_userdata_status(instance_id)
             except RuntimeError:
                 final_status = "unknown"
 

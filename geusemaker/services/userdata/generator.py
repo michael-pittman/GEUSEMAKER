@@ -46,6 +46,7 @@ class UserDataGenerator:
             docker_tmpl = self._env.get_template("docker.sh.j2")
             efs_tmpl = self._env.get_template("efs.sh.j2")
             services_tmpl = self._env.get_template("services.sh.j2")
+            spot_tmpl = self._env.get_template("spot-protection.sh.j2")
             nginx_setup_tmpl = self._env.get_template("nginx-setup.sh.j2")
             healthcheck_tmpl = self._env.get_template("healthcheck.sh.j2")
             n8n_credentials_tmpl = self._env.get_template("n8n-credentials.sh.j2")
@@ -68,6 +69,7 @@ class UserDataGenerator:
                 gpu_tmpl.render(context),
                 efs_tmpl.render(context),
                 docker_tmpl.render(context),
+                spot_tmpl.render(context),
                 services_tmpl.render(context),
                 nginx_setup_tmpl.render(context),
                 healthcheck_tmpl.render(context),

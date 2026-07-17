@@ -308,14 +308,71 @@ Wizard stays linear and scrollback-friendly — **do not** embed the wizard insi
 - Bindings: `q` quit, `?` help, `tab` focus cycle, `d` deploy, `m` monitor
 - Do not redraw whole screen on each SSM line — append to `RichLog`
 
+### 8.4 Log streaming contract (TUI wiring)
+
+Three distinct streams feed the TUI. Each has its own source, transport, and
+readiness today. All of them follow the same worker rules (below); none of them
+change the machine-output (json/yaml) contract.
+
+| Stream | Source | Transport | Status today |
+|--------|--------|-----------|--------------|
+| Deployment progress | `DeploymentRunner` / tier orchestrators | `ProgressEvent` callback (in-process) | Contract implemented; TUI adapter missing |
+| Deployment userdata log | `/var/log/geusemaker-userdata.log` | `SSMService.stream_userdata_logs()` generator, 2s poll | Implemented (CLI `logs --follow`); TUI adapter missing |
+| Instance (server-side) logs | `/var/log/geusemaker/model-preload.log`, `/var/log/amazon/efs/mount.log`, syslog/journal | SSM `cat`/tail polling | SSH-only today — needs a generic `SSMService.tail_file()` primitive |
+| Docker container logs | n8n, ollama, qdrant, crawl4ai, postgres | SSM `docker logs` | One-shot `--tail` only — needs incremental follow |
+
+**Expectations per stream:**
+
+1. **Deployment (Deploy screen).** The deploy checklist is driven by
+   `ProgressEvent` (stage timeline + glyph per stage); when the `userdata`
+   stage begins, the screen additionally attaches
+   `stream_userdata_logs(instance_id)` and appends lines to the log pane until
+   the completion marker, error guard, or 600s timeout. Both feeds run
+   concurrently: events update the timeline, log lines append to `RichLog`.
+   Stream termination states (complete / error-guard / timeout) must be
+   rendered explicitly — never leave a silent dead pane.
+
+2. **Server-side instance logs (Logs view / Inspect jump-off).** Add a
+   polling tail primitive to `SSMService`:
+   `tail_file(instance_id, path, poll_interval=2.0)` — send
+   `tail -c +<offset> <path>` (byte-offset resume, not line dedup), yield new
+   chunks, stop on worker cancel. Expose the known log catalog (userdata,
+   model-preload, EFS mount) as named targets so the TUI shows a picker, not a
+   free-text path prompt.
+
+3. **Docker logs (Logs view).** Extend `SSMService` with
+   `follow_container_logs(instance_id, service, poll_interval=3.0)`: poll
+   `docker logs --since <last-poll-ts> <container>` per interval and de-dupe on
+   timestamp boundary. This also unlocks CLI parity
+   (`geusemaker logs --follow --service n8n`), which is currently rejected for
+   non-userdata services. PostgreSQL has no HTTP surface, so its container log
+   is the primary live signal for that service.
+
+**Worker rules (all streams):**
+
+- Blocking SSM/boto3 generators run in `@work(thread=True, exclusive=True)`
+  workers; UI mutations only via `call_from_thread` (append to `RichLog`).
+- One active stream worker per pane; switching mode/stack cancels the worker
+  (generator `close()`), never orphans it.
+- Streaming panes set `auto_scroll=True` and `max_lines` (bounded memory);
+  static panes (banner art, inventories) keep `auto_scroll=False`.
+- Surface readiness delays in the UI: SSM agent wait (≤60s) renders as a
+  `[WAIT] SSM AGENT…` line, not a frozen screen.
+- IAM prerequisite: instance role must include `AmazonSSMManagedInstanceCore`;
+  a denied SSM call renders as an actionable error line in the pane.
+- Inspect stays disk-only (StateManager). Streaming is reached *from* Inspect
+  via explicit jump-off keys (`l` logs, `m` monitor) — honoring
+  "read-only views do not contact AWS until requested."
+
 ---
 
 ## 9. Phased rollout
 
 Phases 0–3 and the Phase 4 command/environment integration are implemented. The
-remaining work is replacing the current deploy/monitor/inspect workspace summaries
-with AWS-backed Textual workers and richer live widgets. That work must preserve the
-existing service boundaries and must be tested without making Textual mandatory.
+remaining work is Phase 5: replacing the current deploy/monitor/inspect workspace
+summaries with AWS-backed Textual workers and the live streams defined in §8.4.
+That work must preserve the existing service boundaries and must be tested without
+making Textual mandatory.
 
 ### Phase 0 — Dependencies & design tokens (0.5–1 day)
 
@@ -362,6 +419,24 @@ existing service boundaries and must be tested without making Textual mandatory.
 
 **Exit:** Default remains wizard; TUI is documented optional experience.
 
+### Phase 5 — Live streams wiring (contract in §8.4) (4–6 days)
+
+Order of delivery (read-only first, service additions last):
+
+1. **Inspect (disk-only)** — StateManager-backed stack picker + inventory pane;
+   jump-off keys to logs/monitor. No AWS calls.
+2. **Monitor** — health worker (existing health-check client) + userdata tail
+   via existing `stream_userdata_logs()` in a threaded worker.
+3. **Deploy** — checklist timeline consuming `ProgressEvent`; attach userdata
+   stream at the `userdata` stage; explicit terminal states.
+4. **Logs view** — new `SSMService.tail_file()` (instance logs) and
+   `SSMService.follow_container_logs()` (docker) primitives + pane picker;
+   ship CLI `logs --follow --service <name>` parity in the same change.
+
+**Exit:** No placeholder summaries remain; every pane either renders real data
+or an explicit empty/error state. Worker cancellation verified with pilot
+tests (switch mode mid-stream; quit mid-stream). Suite passes without `[tui]`.
+
 ---
 
 ## 10. File / package map
@@ -375,10 +450,9 @@ geusemaker/cli/
 │   └── stage.py             # print_stage helper (new)
 ├── interactive/             # wizard flow (keep)
 ├── tui/                     # NEW (optional import)
-│   ├── app.py
-│   ├── brutalist.tcss
-│   ├── app.py               # Current hub and mode workspaces
-│   └── brutalist.tcss       # Shared Textual presentation
+│   ├── app.py               # Hub + mode workspaces, mode-switch transitions
+│   ├── splash.py            # Animated boot splash (MAIN_BANNER reveal, skip on key)
+│   └── brutalist.tcss       # Shared Textual presentation ($gm-* tokens)
 └── progress_events.py       # NEW shared contract
 ```
 
@@ -418,6 +492,9 @@ geusemaker/cli/
 - [x] Non-interactive JSON/YAML paths retain their one-document stdout contract
 - [x] `geusemaker tui`, `deploy --tui`, `monitor start --tui`, and `GEUSEMAKER_UI=tui`
 - [ ] Replace placeholder mode summaries with AWS-backed worker-driven live screens
+- [ ] Deploy screen streams ProgressEvent timeline + userdata log concurrently (§8.4.1)
+- [ ] Instance log tailing via `SSMService.tail_file()` with named log catalog (§8.4.2)
+- [ ] Docker log following via `SSMService.follow_container_logs()` + CLI `--follow` parity (§8.4.3)
 - [ ] Add optional Textual pilot tests when the `[tui]` extra is installed
 
 ---

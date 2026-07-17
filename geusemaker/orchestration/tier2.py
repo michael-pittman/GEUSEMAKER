@@ -161,6 +161,32 @@ class Tier2Orchestrator(Tier1Orchestrator):
         console.print(f"{EMOJI['check']} Waiting for target health checks to pass...", verbosity="info")
         self._wait_for_healthy_targets(alb_info["target_group_arn"], [tier1_state.instance_id])
 
+        if tier1_state.auto_scaling_group_name:
+            runtime_check = self.ssm_service.run_shell_script(
+                instance_id=tier1_state.instance_id,
+                commands=[
+                    "systemctl is-active --quiet geusemaker-spot-guard.service",
+                    "test -f /var/lib/geusemaker/spot-lease-acquired",
+                ],
+                comment="Verify GeuseMaker production Spot protection",
+                timeout_seconds=60,
+            )
+            if runtime_check.get("Status") != "Success":
+                raise OrchestrationError(
+                    "Production Spot guard verification failed; refusing to report an unprotected deployment"
+                )
+            self.spot_automation_service.verify(
+                asg_name=tier1_state.auto_scaling_group_name,
+                instance_id=tier1_state.instance_id,
+                lease_table_name=tier1_state.spot_lease_table_name or "",
+                lifecycle_hook_names=tier1_state.spot_lifecycle_hook_names,
+                event_rule_names=tier1_state.spot_event_rule_names,
+            )
+            console.print(
+                f"{EMOJI['check']} Production Spot protection verified",
+                verbosity="info",
+            )
+
         # Step 11a: Ensure n8n knows its public URL when behind an ALB.
         # UserData runs before the ALB exists, so Tier 2 must patch runtime.env after ALB DNS/domain is known.
         self._best_effort_configure_n8n_public_url(
@@ -555,6 +581,10 @@ class Tier2Orchestrator(Tier1Orchestrator):
             auto_scaling_group_name=tier1_state.auto_scaling_group_name,
             spot_event_log_group=tier1_state.spot_event_log_group,
             spot_event_rule_names=tier1_state.spot_event_rule_names,
+            spot_lease_table_name=tier1_state.spot_lease_table_name,
+            spot_lifecycle_hook_names=tier1_state.spot_lifecycle_hook_names,
+            spot_coordinator_function_name=tier1_state.spot_coordinator_function_name,
+            spot_coordinator_role_name=tier1_state.spot_coordinator_role_name,
             keypair_name=tier1_state.keypair_name,
             public_ip=tier1_state.public_ip,
             private_ip=tier1_state.private_ip,

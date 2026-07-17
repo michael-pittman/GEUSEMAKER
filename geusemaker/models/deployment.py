@@ -218,6 +218,10 @@ class DeploymentState(BaseModel):
     auto_scaling_group_name: str | None = None
     spot_event_log_group: str | None = None
     spot_event_rule_names: list[str] = Field(default_factory=list)
+    spot_lease_table_name: str | None = None
+    spot_lifecycle_hook_names: list[str] = Field(default_factory=list)
+    spot_coordinator_function_name: str | None = None
+    spot_coordinator_role_name: str | None = None
     cloudfront_id: str | None = None
     cloudfront_domain: str | None = None
     storage_subnet_id: str | None = None

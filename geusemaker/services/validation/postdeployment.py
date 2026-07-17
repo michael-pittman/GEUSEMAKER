@@ -24,6 +24,7 @@ from geusemaker.services.health import (
     check_all_services,
     check_postgres,
 )
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.validation.remediation import remediation_for
 
 LOGGER = logging.getLogger(__name__)
@@ -39,12 +40,14 @@ class PostDeploymentValidator:
         health_client: HealthCheckClient | None = None,
         ec2_client: object | None = None,
         efs_mount_checker: Callable[[DeploymentState], bool] | None = None,
+        instance_resolver: InstanceResolver | None = None,
     ):
         self._client_factory = client_factory
         self.region = region
         self._health = health_client or HealthCheckClient()
         self._ec2 = ec2_client or self._client_factory.get_client("ec2", region=region)
         self._efs_mount_checker = efs_mount_checker or (lambda _: True)
+        self._instance_resolver = instance_resolver or InstanceResolver(client_factory, region=region)
 
     async def validate(self, deployment: DeploymentState) -> ValidationReport:
         """Run post-deployment validation and return a report."""
@@ -54,7 +57,12 @@ class PostDeploymentValidator:
             deployment_tier=deployment.config.tier,
         )
 
-        instance_check = await self._check_instance_status(deployment.instance_id)
+        try:
+            active_instance = await asyncio.to_thread(self._instance_resolver.resolve, deployment)
+        except RuntimeError as exc:
+            report.add(ValidationCheck(check_name="instance_resolution", passed=False, message=str(exc)))
+            return self._finalize(report, start)
+        instance_check = await self._check_instance_status(active_instance.instance_id)
         report.add(instance_check)
         if not instance_check.passed:
             return self._finalize(report, start)

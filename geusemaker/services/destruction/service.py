@@ -134,6 +134,10 @@ class DestructionService:
                         launch_template_id=state.launch_template_id,
                         rule_names=state.spot_event_rule_names,
                         log_group_name=state.spot_event_log_group,
+                        lease_table_name=state.spot_lease_table_name,
+                        lifecycle_hook_names=state.spot_lifecycle_hook_names,
+                        coordinator_function_name=state.spot_coordinator_function_name,
+                        coordinator_role_name=state.spot_coordinator_role_name,
                     )
                 if state.auto_scaling_group_name:
                     deleted.append(self._deleted("auto_scaling_group", state.auto_scaling_group_name))

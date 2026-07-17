@@ -16,6 +16,7 @@ from geusemaker.cli.output import (
     output_option,
 )
 from geusemaker.infra import AWSClientFactory, StateManager
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.ssm import SSMService
 
 
@@ -102,12 +103,14 @@ def logs(
 
     # Fetch logs based on service type
     try:
+        instance_id = InstanceResolver(client_factory, region=state.config.region).resolve(state).instance_id
+        state_manager.save_deployment_sync(state)
         if follow:
-            _stream_userdata_logs(ssm_service, state.instance_id)
+            _stream_userdata_logs(ssm_service, instance_id)
         elif service == "userdata":
-            _fetch_userdata_logs(ssm_service, state.instance_id, stack_name, output_format)
+            _fetch_userdata_logs(ssm_service, instance_id, stack_name, output_format)
         else:
-            _fetch_container_logs(ssm_service, state.instance_id, service, tail, stack_name, output_format)
+            _fetch_container_logs(ssm_service, instance_id, service, tail, stack_name, output_format)
     except RuntimeError as exc:
         payload = build_response(
             status="error",
