@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import urllib.parse
+
 import pytest
 from moto import mock_aws
 
@@ -51,6 +54,35 @@ def test_create_instance_profile_returns_arn() -> None:
 
     assert profile_arn.startswith("arn:aws:iam::")
     assert "instance-profile/test-instance-profile" in profile_arn
+
+
+@mock_aws
+def test_attach_spot_runtime_policy_is_resource_scoped() -> None:
+    """Spot instances receive the lease, drain, lifecycle, and logging permissions they use."""
+    factory = AWSClientFactory()
+    svc = IAMService(factory, region="us-east-1")
+    svc.create_efs_mount_role("test-role", [])
+
+    svc.attach_spot_runtime_policy(
+        "test-role",
+        lease_table_arn="arn:aws:dynamodb:us-east-1:123456789012:table/test-lease",
+        log_group_arn="arn:aws:logs:us-east-1:123456789012:log-group:/geusemaker/test/spot-events",
+        target_group_arn="arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/test/abc",
+    )
+
+    response = factory.get_client("iam").get_role_policy(
+        RoleName="test-role",
+        PolicyName="GeuseMakerSpotRuntimePolicy",
+    )
+    document = response["PolicyDocument"]
+    if isinstance(document, str):
+        document = json.loads(urllib.parse.unquote(document))
+    statements = document["Statement"]
+    assert statements[0]["Resource"].endswith("table/test-lease")
+    assert statements[1]["Resource"].endswith("spot-events:*")
+    assert statements[2]["Action"] == ["elasticloadbalancing:DeregisterTargets"]
+    assert statements[3]["Action"] == ["autoscaling:DescribeLoadBalancerTargetGroups"]
+    assert statements[4]["Condition"]["StringEquals"]["autoscaling:ResourceTag/ManagedBy"] == "GeuseMaker"
 
 
 @mock_aws

@@ -99,3 +99,15 @@ def test_cost_tracking_runtime_defaults(sample_cost: CostTracking) -> None:
     assert sample_cost.total_runtime_hours == 0.0
     assert sample_cost.estimated_cost_to_date == Decimal("0.0")
     assert sample_cost.instance_start_time is None
+
+
+def test_workload_and_topology_are_independent_with_legacy_defaults() -> None:
+    legacy_gpu = DeploymentConfig(stack_name="legacy", tier="gpu")
+    assert legacy_gpu.effective_workload == "gpu"
+    assert legacy_gpu.topology == "global"
+
+    cpu_global = DeploymentConfig(stack_name="cpu-global", tier="gpu", workload="cpu")
+    gpu_dev = DeploymentConfig(stack_name="gpu-dev", tier="dev", workload="gpu")
+    assert cpu_global.effective_workload == "cpu"
+    assert gpu_dev.effective_workload == "gpu"
+    assert gpu_dev.instance_preference == "balanced"

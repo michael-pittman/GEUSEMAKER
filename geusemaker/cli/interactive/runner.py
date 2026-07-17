@@ -10,14 +10,18 @@ from rich.text import Text
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.components.stage import print_stage
 from geusemaker.cli.display.cost import render_budget_status
 from geusemaker.cli.display.validation import render_validation_report
+from geusemaker.cli.output import is_machine_output
+from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration import Tier1Orchestrator, Tier2Orchestrator, Tier3Orchestrator
 from geusemaker.services.acm import ACMService
 from geusemaker.services.compute.spot import SpotSelectionService
 from geusemaker.services.cost import BudgetService, CostEstimator
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.route53 import Route53Service
 from geusemaker.services.ssm import SSMService
@@ -44,12 +48,19 @@ class DeploymentRunner:
 
     def _stream_userdata_logs(self, state: DeploymentState) -> None:
         """Stream UserData initialization logs in real time from the deployed instance."""
-        if not state.instance_id:
+        if not state.instance_id and not getattr(state, "auto_scaling_group_name", None):
+            return
+
+        # Machine output reserves stdout for one structured document; the Rich Live
+        # panel writes directly to the console, so skip streaming entirely.
+        if is_machine_output():
             return
 
         ssm_service = SSMService(self.client_factory, region=state.config.region)
 
         try:
+            instance_id = InstanceResolver(self.client_factory, region=state.config.region).resolve(state).instance_id
+            self.state_manager.save_deployment_sync(state)
             console.print(
                 f"\n{EMOJI['info']} Streaming UserData initialization logs...",
                 verbosity="info",
@@ -69,7 +80,7 @@ class DeploymentRunner:
             # Use Live context to update panel with streaming logs
             with Live(panel, console=console, refresh_per_second=4) as live:
                 for log_line in ssm_service.stream_userdata_logs(
-                    instance_id=state.instance_id,
+                    instance_id=instance_id,
                     poll_interval=2.0,
                     timeout_seconds=600,
                 ):
@@ -88,10 +99,30 @@ class DeploymentRunner:
                         )
                     )
 
-            console.print(
-                f"\n{EMOJI['check']} UserData initialization complete!",
-                verbosity="info",
-            )
+            # The stream also ends on error-guard detection or timeout, so check the
+            # actual outcome instead of unconditionally declaring success.
+            try:
+                final_status = ssm_service.get_userdata_status(instance_id)
+            except RuntimeError:
+                final_status = "unknown"
+
+            if final_status == "success":
+                console.print(
+                    f"\n{EMOJI['check']} UserData initialization complete!",
+                    verbosity="info",
+                )
+            elif final_status == "error":
+                console.print(
+                    f"\n{EMOJI['error']} UserData initialization FAILED — services did not start. "
+                    f"Inspect with: geusemaker logs {state.stack_name}",
+                    verbosity="error",
+                )
+            else:
+                console.print(
+                    f"\n{EMOJI['warning']} UserData still initializing (status: {final_status}). "
+                    f"Check progress with: geusemaker logs {state.stack_name} --follow",
+                    verbosity="warning",
+                )
 
         except RuntimeError as exc:
             console.print(
@@ -104,8 +135,10 @@ class DeploymentRunner:
         config: DeploymentConfig,
         progress: object | None = None,
         skip_validation: bool = False,
+        on_progress: ProgressCallback | None = None,
     ) -> DeploymentState:
         """Validate configuration and run the Tier1 orchestrator."""
+        emit = on_progress or print_stage
         # Normalize tier-related feature flags
         updates: dict[str, object] = {}
         if config.tier == "automation" and not config.enable_alb:
@@ -115,6 +148,12 @@ class DeploymentRunner:
                 updates["enable_alb"] = True
             if not config.enable_cdn:
                 updates["enable_cdn"] = True
+        # The 15-minute default rollback timeout cannot fit a CDN deployment:
+        # ACM issuance + instance + ALB alone take ~15 minutes before CloudFront's
+        # 15-30 minute rollout begins, so the default would abort every healthy
+        # Tier 3 deploy. Scale it up unless the user chose a larger value.
+        if (config.enable_cdn or config.tier == "gpu") and config.rollback_timeout_minutes <= 15:
+            updates["rollback_timeout_minutes"] = 60
         if updates:
             config = config.model_copy(update=updates)
             console.print(
@@ -137,6 +176,7 @@ class DeploymentRunner:
         )
         budget_service = BudgetService()
 
+        emit(ProgressEvent("spot", f"Selecting compute capacity for {config.instance_type}"))
         selection = spot_selector.select_instance_type(config)
         estimate = cost_estimator.estimate_deployment_cost(config, selection=selection)
         budget_status = budget_service.check_budget(estimate, config.budget_limit)
@@ -150,6 +190,7 @@ class DeploymentRunner:
                 verbosity="info",
             )
         else:
+            emit(ProgressEvent("validate", "Running pre-deployment validation"))
             validator = PreDeploymentValidator(self.client_factory, region=config.region)
             if progress:
                 try:
@@ -239,9 +280,12 @@ class DeploymentRunner:
             config,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=emit,
         )
         # Share pre-selected compute choice to align AZ + pricing with validation
         orchestrator._preselected_selection = selection
+        primary_stage = "cdn" if config.enable_cdn or config.tier == "gpu" else "alb" if config.enable_alb else "ec2"
+        emit(ProgressEvent(primary_stage, f"Provisioning {config.topology} topology"))
         state = orchestrator.deploy(config, enable_rollback=config.auto_rollback_on_failure)
 
         # Stream UserData initialization logs after deployment
@@ -250,6 +294,7 @@ class DeploymentRunner:
                 progress.advance("Streaming initialization logs")
             except AttributeError:
                 pass
+        emit(ProgressEvent("userdata", "Streaming instance initialization"))
         self._stream_userdata_logs(state)
 
         if progress:
@@ -257,6 +302,7 @@ class DeploymentRunner:
                 progress.advance("Saving state")
             except AttributeError:
                 pass
+        emit(ProgressEvent("finalize", f"Deployment state saved for {state.stack_name}"))
         return state
 
     def _select_orchestrator(
@@ -264,6 +310,7 @@ class DeploymentRunner:
         config: DeploymentConfig,
         pricing_service: PricingService,
         spot_selector: SpotSelectionService,
+        on_progress: ProgressCallback | None = None,
     ):
         if config.enable_cdn or config.tier == "gpu":
             return Tier3Orchestrator(
@@ -272,6 +319,7 @@ class DeploymentRunner:
                 state_manager=self.state_manager,
                 pricing_service=pricing_service,
                 spot_selector=spot_selector,
+                on_progress=on_progress,
             )
         if config.enable_alb or config.tier == "automation":
             return Tier2Orchestrator(
@@ -280,6 +328,7 @@ class DeploymentRunner:
                 state_manager=self.state_manager,
                 pricing_service=pricing_service,
                 spot_selector=spot_selector,
+                on_progress=on_progress,
             )
         return Tier1Orchestrator(
             self.client_factory,
@@ -287,6 +336,7 @@ class DeploymentRunner:
             state_manager=self.state_manager,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=on_progress,
         )
 
 

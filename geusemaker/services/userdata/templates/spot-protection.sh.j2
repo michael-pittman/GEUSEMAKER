@@ -1,0 +1,155 @@
+{% if spot_protection_enabled %}
+if [ "{{ tier }}" != "automation" ] && [ "{{ tier }}" != "gpu" ]; then
+    echo "ERROR: Spot protection may only be enabled for production tiers"
+    exit 1
+fi
+{% if not spot_lease_table_name or not spot_auto_scaling_group_name or not spot_log_group_name %}
+echo "ERROR: Spot protection requires lease table, ASG, and log group inputs"
+exit 1
+{% else %}
+if ! command -v aws >/dev/null 2>&1; then
+    echo "Installing AWS CLI for Spot protection"
+    if [ "$OS_FAMILY" = "debian" ]; then
+        with_dpkg_lock_retry apt-get install -y awscli
+    else
+        yum install -y awscli
+    fi
+fi
+
+cat > /etc/geusemaker-spot.env <<'EOF'
+AWS_REGION={{ region }}
+STACK_NAME={{ stack_name }}
+LEASE_TABLE={{ spot_lease_table_name }}
+ASG_NAME={{ spot_auto_scaling_group_name }}
+TARGET_GROUP_ARN={{ spot_target_group_arn or '' }}
+LOG_GROUP={{ spot_log_group_name }}
+LIFECYCLE_HOOK={{ spot_termination_hook_name or '' }}
+LAUNCH_HOOK={{ spot_launch_hook_name or '' }}
+COMPOSE_FILE={{ '/opt/geusemaker/runtime/docker-compose.yml' if use_runtime_bundle else '/root/docker-compose.yml' }}
+EOF
+chmod 600 /etc/geusemaker-spot.env
+
+cat > /usr/local/sbin/geusemaker-spot-guard <<'__SPOT_GUARD__'
+#!/bin/bash
+set -uo pipefail
+. /etc/geusemaker-spot.env
+IMDS=http://169.254.169.254/latest
+TOKEN=""
+INSTANCE_ID=""
+LEASE_SECONDS=45
+STREAM=""
+DRAINED=0
+LEASE_FAILURES=0
+[ -f /var/lib/geusemaker/spot-drained ] && exit 0
+
+imds_token() { TOKEN=$(curl -fsS --connect-timeout 1 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' "$IMDS/api/token" || true); }
+imds() { [ -n "$TOKEN" ] || imds_token; curl -fsS --connect-timeout 1 -H "X-aws-ec2-metadata-token: $TOKEN" "$IMDS/$1"; }
+json_log() {
+    local event="$1" detail="${2:-}" now payload events
+    now=$(date +%s%3N)
+    payload=$(printf '{"timestamp":"%s","stack":"%s","instance_id":"%s","event":"%s","detail":"%s"}' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STACK_NAME" "$INSTANCE_ID" "$event" "${detail//\"/\\\"}")
+    logger -t geusemaker-spot "$payload"
+    events=$(python3 -c 'import json,sys; print(json.dumps([{"timestamp": int(sys.argv[1]), "message": sys.argv[2]}]))' "$now" "$payload")
+    aws logs put-log-events --region "$AWS_REGION" --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" --log-events "$events" >/dev/null 2>&1 || true
+}
+lease_acquire() {
+    local now expires
+    now=$(date +%s); expires=$((now + LEASE_SECONDS))
+    aws dynamodb update-item --region "$AWS_REGION" --table-name "$LEASE_TABLE" \
+      --key "{\"StackName\":{\"S\":\"$STACK_NAME\"}}" \
+      --update-expression 'SET #o=:owner, ExpiresAt=:expires, UpdatedAt=:now' \
+      --condition-expression 'attribute_not_exists(#o) OR ExpiresAt < :now OR #o = :owner' \
+      --expression-attribute-names '{"#o":"Owner"}' \
+      --expression-attribute-values "{\":owner\":{\"S\":\"$INSTANCE_ID\"},\":expires\":{\"N\":\"$expires\"},\":now\":{\"N\":\"$now\"}}" >/dev/null 2>&1
+}
+lease_release() {
+    aws dynamodb delete-item --region "$AWS_REGION" --table-name "$LEASE_TABLE" \
+      --key "{\"StackName\":{\"S\":\"$STACK_NAME\"}}" --condition-expression '#o = :owner' \
+      --expression-attribute-names '{"#o":"Owner"}' \
+      --expression-attribute-values "{\":owner\":{\"S\":\"$INSTANCE_ID\"}}" >/dev/null 2>&1 || true
+}
+drain() {
+    [ "$DRAINED" -eq 0 ] || return 0; DRAINED=1
+    touch /var/lib/geusemaker/spot-drained
+    json_log drain_started "$1"
+    aws autoscaling set-instance-protection --region "$AWS_REGION" --auto-scaling-group-name "$ASG_NAME" --instance-ids "$INSTANCE_ID" --no-protected-from-scale-in >/dev/null 2>&1 || true
+    if [ -z "$TARGET_GROUP_ARN" ]; then
+      TARGET_GROUP_ARN=$(aws autoscaling describe-load-balancer-target-groups --region "$AWS_REGION" --auto-scaling-group-name "$ASG_NAME" --query 'LoadBalancerTargetGroups[0].LoadBalancerTargetGroupARN' --output text 2>/dev/null || true)
+      [ "$TARGET_GROUP_ARN" = "None" ] && TARGET_GROUP_ARN=""
+    fi
+    if [ -n "$TARGET_GROUP_ARN" ]; then
+      aws elbv2 deregister-targets --region "$AWS_REGION" --target-group-arn "$TARGET_GROUP_ARN" --targets "Id=$INSTANCE_ID" >/dev/null 2>&1 || true
+    fi
+    if command -v docker-compose >/dev/null 2>&1; then docker-compose -f "$COMPOSE_FILE" stop -t 45 || true; else docker compose -f "$COMPOSE_FILE" stop -t 45 || true; fi
+    sync
+    lease_release
+    if [ -n "$LIFECYCLE_HOOK" ]; then
+      aws autoscaling complete-lifecycle-action --region "$AWS_REGION" --lifecycle-hook-name "$LIFECYCLE_HOOK" --auto-scaling-group-name "$ASG_NAME" --instance-id "$INSTANCE_ID" --lifecycle-action-result CONTINUE >/dev/null 2>&1 || true
+    fi
+    json_log drain_completed "$1"
+    if [ "$1" = "lease_lost" ]; then
+      aws autoscaling terminate-instance-in-auto-scaling-group --region "$AWS_REGION" --instance-id "$INSTANCE_ID" --no-should-decrement-desired-capacity >/dev/null 2>&1 || true
+    fi
+}
+trap 'drain service_stop; exit 0' TERM INT
+INSTANCE_ID=$(imds meta-data/instance-id) || exit 1
+STREAM="instance-$INSTANCE_ID"
+aws logs create-log-stream --region "$AWS_REGION" --log-group-name "$LOG_GROUP" --log-stream-name "$STREAM" >/dev/null 2>&1 || true
+until lease_acquire; do json_log lease_waiting active_node_exists; sleep 5; done
+if [ -n "$LAUNCH_HOOK" ]; then
+  aws autoscaling complete-lifecycle-action --region "$AWS_REGION" --lifecycle-hook-name "$LAUNCH_HOOK" --auto-scaling-group-name "$ASG_NAME" --instance-id "$INSTANCE_ID" --lifecycle-action-result CONTINUE >/dev/null 2>&1 || true
+fi
+touch /var/lib/geusemaker/spot-lease-acquired
+json_log lease_acquired
+while true; do
+    if imds meta-data/spot/instance-action >/dev/null 2>&1; then drain interruption_notice; exit 0; fi
+    if imds events/recommendations/rebalance >/dev/null 2>&1; then drain rebalance_recommendation; exit 0; fi
+    if lease_acquire; then
+      LEASE_FAILURES=0
+    else
+      LEASE_FAILURES=$((LEASE_FAILURES + 1))
+      json_log lease_heartbeat_failed "attempt=$LEASE_FAILURES"
+      if [ "$LEASE_FAILURES" -ge 3 ]; then drain lease_lost; exit 0; fi
+    fi
+    sleep 5
+done
+__SPOT_GUARD__
+chmod 750 /usr/local/sbin/geusemaker-spot-guard
+
+cat > /etc/systemd/system/geusemaker-spot-guard.service <<'EOF'
+[Unit]
+Description=GeuseMaker Spot interruption and active-node guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/geusemaker-spot-guard
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=70
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/geusemaker-spot-drain.service <<'EOF'
+[Unit]
+Description=Request graceful GeuseMaker Spot drain
+After=geusemaker-spot-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl kill --signal=SIGTERM geusemaker-spot-guard.service
+EOF
+systemctl daemon-reload
+systemctl enable --now geusemaker-spot-guard.service
+for _ in $(seq 1 24); do
+    [ -f /var/lib/geusemaker/spot-lease-acquired ] && break
+    sleep 5
+done
+if [ ! -f /var/lib/geusemaker/spot-lease-acquired ]; then
+    echo "ERROR: Timed out waiting for the production active-node lease"
+    exit 1
+fi
+{% endif %}
+{% endif %}

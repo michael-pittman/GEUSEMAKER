@@ -1,5 +1,8 @@
 # AMI Selection and Validation Review
 
+> **Point-in-time analysis.** Preserve this document as review evidence; validate current
+> behavior against the implementation and tests before treating individual findings as open.
+
 **Date**: 2025-12-02
 **Scope**: EC2Service AMI validation against AWS best practices
 

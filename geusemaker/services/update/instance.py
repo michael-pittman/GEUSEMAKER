@@ -22,6 +22,11 @@ class InstanceUpdater:
 
     def update_instance_type(self, state: DeploymentState, new_type: str) -> list[str]:
         """Stop, modify, and restart the instance with a new type."""
+        if state.auto_scaling_group_name:
+            raise RuntimeError(
+                "ASG-backed deployments require a launch-template instance-type update; "
+                "stopping the managed member would trigger an unintended replacement."
+            )
         if not new_type:
             raise ValueError("New instance type must be provided.")
         if not state.instance_id:

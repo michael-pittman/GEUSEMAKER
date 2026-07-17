@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.progress_events import ProgressCallback
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration.errors import OrchestrationError
@@ -31,6 +32,7 @@ class Tier2Orchestrator(Tier1Orchestrator):
         state_manager: StateManager | None = None,
         pricing_service=None,
         spot_selector=None,
+        on_progress: ProgressCallback | None = None,
     ):
         super().__init__(
             client_factory,
@@ -38,6 +40,7 @@ class Tier2Orchestrator(Tier1Orchestrator):
             state_manager,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=on_progress,
         )
         self.alb_service = ALBService(self.client_factory, region=region)
         # Used to gate ALB registration until instance init completes (best-effort; may be stubbed in tests).
@@ -88,6 +91,7 @@ class Tier2Orchestrator(Tier1Orchestrator):
         self._check_timeout(start_time, config.rollback_timeout_minutes, "before ALB setup")
 
         # Step 8: Wait for UserData to complete before registering with ALB
+        self._emit_progress("userdata", "Waiting for instance initialization to complete")
         console.print(f"{EMOJI['info']} Waiting for instance initialization to complete...", verbosity="info")
 
         ssm_ready = False
@@ -133,8 +137,10 @@ class Tier2Orchestrator(Tier1Orchestrator):
                 console.print(f"{EMOJI['check']} Instance initialization complete", verbosity="info")
 
         # Step 9: Create ALB infrastructure
+        self._emit_progress("alb", "Creating Application Load Balancer")
         console.print(f"\n{EMOJI['rocket']} Creating Application Load Balancer...", verbosity="info")
         alb_info = self._create_alb(config, tier1_state)
+        self._emit_progress("alb", f"ALB created: {alb_info['alb_dns']}", resource_id=alb_info["alb_arn"])
 
         # Step 9b: Save state with ALB info immediately so rollback can clean it up
         # This is critical -- if health checks or registration fail, the ALB
@@ -147,10 +153,46 @@ class Tier2Orchestrator(Tier1Orchestrator):
         # Step 10: Register EC2 instance with target group
         console.print(f"{EMOJI['info']} Registering EC2 instance with target group...", verbosity="info")
         self._register_instance(tier1_state.instance_id, alb_info)
+        if tier1_state.auto_scaling_group_name:
+            self.spot_automation_service.attach_target_group(
+                tier1_state.auto_scaling_group_name,
+                alb_info["target_group_arn"],
+            )
+            console.print(
+                f"{EMOJI['check']} Auto Scaling replacements will register with the target group automatically",
+                verbosity="info",
+            )
 
         # Step 11: Wait for instance to become healthy
+        self._emit_progress("health", "Waiting for target health checks to pass")
         console.print(f"{EMOJI['check']} Waiting for target health checks to pass...", verbosity="info")
         self._wait_for_healthy_targets(alb_info["target_group_arn"], [tier1_state.instance_id])
+
+        if tier1_state.auto_scaling_group_name:
+            runtime_check = self.ssm_service.run_shell_script(
+                instance_id=tier1_state.instance_id,
+                commands=[
+                    "systemctl is-active --quiet geusemaker-spot-guard.service",
+                    "test -f /var/lib/geusemaker/spot-lease-acquired",
+                ],
+                comment="Verify GeuseMaker production Spot protection",
+                timeout_seconds=60,
+            )
+            if runtime_check.get("Status") != "Success":
+                raise OrchestrationError(
+                    "Production Spot guard verification failed; refusing to report an unprotected deployment"
+                )
+            self.spot_automation_service.verify(
+                asg_name=tier1_state.auto_scaling_group_name,
+                instance_id=tier1_state.instance_id,
+                lease_table_name=tier1_state.spot_lease_table_name or "",
+                lifecycle_hook_names=tier1_state.spot_lifecycle_hook_names,
+                event_rule_names=tier1_state.spot_event_rule_names,
+            )
+            console.print(
+                f"{EMOJI['check']} Production Spot protection verified",
+                verbosity="info",
+            )
 
         # Step 11a: Ensure n8n knows its public URL when behind an ALB.
         # UserData runs before the ALB exists, so Tier 2 must patch runtime.env after ALB DNS/domain is known.
@@ -166,6 +208,8 @@ class Tier2Orchestrator(Tier1Orchestrator):
         if config.enable_https and config.alb_domain_name and config.alb_hosted_zone_id:
             alb_zone_id = alb_info.get("alb_zone_id")
             if alb_zone_id:
+                # ACM/Route 53 work is folded into the alb stage for the timeline.
+                self._emit_progress("alb", f"Creating Route 53 alias for {config.alb_domain_name}")
                 console.print(
                     f"{EMOJI['info']} Creating Route 53 ALIAS record for {config.alb_domain_name}...",
                     verbosity="info",
@@ -235,6 +279,9 @@ class Tier2Orchestrator(Tier1Orchestrator):
             # Prefer runtime bundle location when present.
             # UserData uses COMPOSE_FILE_PATH in /root (no bundle) or /opt/geusemaker/runtime (bundle).
             cmd_lines = [
+                # SSM runs scripts with /bin/sh (dash on Ubuntu) unless a shebang says
+                # otherwise; the script below uses bashisms (pipefail, set -a).
+                "#!/bin/bash",
                 "set -euo pipefail",
                 'if [ -f /opt/geusemaker/runtime/runtime.env ]; then ENV_FILE="/opt/geusemaker/runtime/runtime.env"; COMPOSE_FILE="/opt/geusemaker/runtime/docker-compose.yml"; '
                 'else ENV_FILE="/root/runtime.env"; COMPOSE_FILE="/root/docker-compose.yml"; fi',
@@ -532,12 +579,21 @@ class Tier2Orchestrator(Tier1Orchestrator):
             security_group_id=tier1_state.security_group_id,
             efs_id=tier1_state.efs_id,
             efs_mount_target_id=tier1_state.efs_mount_target_id,
+            efs_mount_target_ids=tier1_state.efs_mount_target_ids,
             efs_mount_target_ip=tier1_state.efs_mount_target_ip,
             iam_role_name=tier1_state.iam_role_name,
             iam_role_arn=tier1_state.iam_role_arn,
             iam_instance_profile_name=tier1_state.iam_instance_profile_name,
             iam_instance_profile_arn=tier1_state.iam_instance_profile_arn,
             instance_id=tier1_state.instance_id,
+            launch_template_id=tier1_state.launch_template_id,
+            auto_scaling_group_name=tier1_state.auto_scaling_group_name,
+            spot_event_log_group=tier1_state.spot_event_log_group,
+            spot_event_rule_names=tier1_state.spot_event_rule_names,
+            spot_lease_table_name=tier1_state.spot_lease_table_name,
+            spot_lifecycle_hook_names=tier1_state.spot_lifecycle_hook_names,
+            spot_coordinator_function_name=tier1_state.spot_coordinator_function_name,
+            spot_coordinator_role_name=tier1_state.spot_coordinator_role_name,
             keypair_name=tier1_state.keypair_name,
             public_ip=tier1_state.public_ip,
             private_ip=tier1_state.private_ip,

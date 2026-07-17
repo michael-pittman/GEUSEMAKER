@@ -34,6 +34,18 @@ from geusemaker.services.cleanup import OrphanDetector
 def cleanup(dry_run: bool, delete_all: bool, region: str, state_dir: str | None, output: str) -> None:
     """Detect and optionally delete orphaned GeuseMaker resources."""
     output_format = OutputFormat(output.lower())
+
+    # Machine-readable runs are unattended: never fall through to click.confirm(),
+    # which would hang automation and contaminate the structured stdout document.
+    if output_format != OutputFormat.TEXT and not delete_all and not dry_run:
+        payload = build_response(
+            status="error",
+            message="cleanup with --output json|yaml requires --all (delete everything found) or --dry-run.",
+            error_code="confirmation_required",
+        )
+        emit_result(payload, output_format)
+        raise SystemExit(2)
+
     manager = StateManager(base_path=Path(state_dir) if state_dir else None)
     detector = OrphanDetector(state_manager=manager, region=region)
 

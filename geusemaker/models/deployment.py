@@ -26,6 +26,17 @@ class DeploymentConfig(BaseModel):
         description="Identifier for the deployment; used for tagging and state files.",
     )
     tier: Literal["dev", "automation", "gpu"]
+    workload: Literal["cpu", "gpu"] | None = Field(
+        default=None,
+        description=(
+            "Compute workload, independent of deployment topology. When omitted, legacy "
+            "GPU-tier configurations imply GPU and all other tiers imply CPU."
+        ),
+    )
+    instance_preference: Literal["balanced", "lowest_cost", "highest_availability", "performance"] = Field(
+        default="balanced",
+        description="Policy used to rank eligible instance recommendations.",
+    )
     region: str = Field(
         default="us-east-1",
         pattern=r"^[a-z]{2}-[a-z]+-\d$",
@@ -123,6 +134,16 @@ class DeploymentConfig(BaseModel):
     auto_rollback_on_failure: bool = Field(default=True)
     rollback_timeout_minutes: int = Field(default=15, ge=5, le=60)
 
+    @property
+    def effective_workload(self) -> Literal["cpu", "gpu"]:
+        """Return explicit workload or the backward-compatible legacy inference."""
+        return self.workload or ("gpu" if self.tier == "gpu" else "cpu")
+
+    @property
+    def topology(self) -> Literal["development", "production", "global"]:
+        """Expose a topology name without changing persisted legacy tier identifiers."""
+        return {"dev": "development", "automation": "production", "gpu": "global"}[self.tier]
+
 
 class RollbackRecord(BaseModel):
     """Record of a rollback operation."""
@@ -178,6 +199,7 @@ class DeploymentState(BaseModel):
     security_group_id: str
     efs_id: str
     efs_mount_target_id: str
+    efs_mount_target_ids: list[str] = Field(default_factory=list)
     efs_mount_target_ip: str | None = None
     instance_id: str
     keypair_name: str
@@ -192,6 +214,14 @@ class DeploymentState(BaseModel):
     alb_arn: str | None = None
     alb_dns: str | None = None
     target_group_arn: str | None = None
+    launch_template_id: str | None = None
+    auto_scaling_group_name: str | None = None
+    spot_event_log_group: str | None = None
+    spot_event_rule_names: list[str] = Field(default_factory=list)
+    spot_lease_table_name: str | None = None
+    spot_lifecycle_hook_names: list[str] = Field(default_factory=list)
+    spot_coordinator_function_name: str | None = None
+    spot_coordinator_role_name: str | None = None
     cloudfront_id: str | None = None
     cloudfront_domain: str | None = None
     storage_subnet_id: str | None = None

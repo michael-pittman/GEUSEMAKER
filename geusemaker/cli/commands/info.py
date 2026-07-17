@@ -19,8 +19,10 @@ from geusemaker.cli.output import (
     emit_result,
     output_option,
 )
+from geusemaker.infra import AWSClientFactory
 from geusemaker.infra.state import StateManager
 from geusemaker.services.health import HealthCheckClient, check_all_services
+from geusemaker.services.instance_resolver import InstanceResolver
 
 
 @click.command("info")
@@ -49,6 +51,15 @@ def info(stack_name: str, output: str, state_dir: str | None, host: str | None, 
         else:
             emit_result(payload, output_format)
         raise SystemExit(1)
+
+    if state.auto_scaling_group_name:
+        try:
+            factory = AWSClientFactory()
+            InstanceResolver(factory, region=state.config.region).resolve(state)
+            manager.save_deployment_sync(state)
+        except RuntimeError as exc:
+            if output_format == OutputFormat.TEXT:
+                console.print(f"{EMOJI['warning']} Unable to refresh active instance: {exc}", verbosity="warning")
 
     resolved_host = host or state.public_ip or state.private_ip
     display_host = resolved_host or "unknown"

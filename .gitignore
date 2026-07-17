@@ -59,7 +59,8 @@ runtime-bundle-*.tar.gz
 *.key
 !*.example.key
 credentials
-config
+# AWS shared config is already covered by `.aws/`; keep the repository's
+# version-controlled `config/` examples visible to Git.
 
 # Test artifacts
 .pytest_cache/
@@ -86,3 +87,6 @@ logs/
 
 # Junk directory (user's temporary files)
 Junk/
+
+# Project virtualenvs
+.venv312/

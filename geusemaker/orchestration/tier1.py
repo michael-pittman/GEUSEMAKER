@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.progress_events import ProgressCallback, ProgressEvent, ProgressLevel, Stage
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState, VPCInfo
 from geusemaker.models.compute import InstanceSelection, SavingsComparison
@@ -25,6 +26,7 @@ from geusemaker.services.efs import EFSService
 from geusemaker.services.iam import IAMService
 from geusemaker.services.pricing import PricingService
 from geusemaker.services.sg import SecurityGroupService
+from geusemaker.services.spot_automation import SpotAutomationService
 from geusemaker.services.userdata import UserDataGenerator
 from geusemaker.services.vpc import VPCService
 
@@ -39,10 +41,13 @@ class Tier1Orchestrator:
         state_manager: StateManager | None = None,
         pricing_service: PricingService | None = None,
         spot_selector: SpotSelectionService | None = None,
+        on_progress: ProgressCallback | None = None,
     ):
         self.client_factory = client_factory or AWSClientFactory()
         self.region = region
         self.state_manager = state_manager or StateManager()
+        self.on_progress = on_progress
+        self._last_progress_stage: Stage | None = None
         self.pricing_service = pricing_service or PricingService(self.client_factory, region=region)
         self._preselected_selection = None
         self._deploy_start_time: float | None = None
@@ -51,6 +56,7 @@ class Tier1Orchestrator:
         self.sg_service = SecurityGroupService(self.client_factory, region=region)
         self.ec2_service = EC2Service(self.client_factory, region=region)
         self.iam_service = IAMService(self.client_factory, region=region)
+        self.spot_automation_service = SpotAutomationService(self.client_factory, region=region)
         # Initialize spot selector with EC2 service for accurate AMI-based dry-run checks
         self.spot_selector = spot_selector or SpotSelectionService(
             self.client_factory,
@@ -60,9 +66,32 @@ class Tier1Orchestrator:
         )
         self.userdata_generator = UserDataGenerator()
 
+    def _emit_progress(
+        self,
+        stage: Stage,
+        message: str,
+        *,
+        level: ProgressLevel = "info",
+        resource_id: str | None = None,
+    ) -> None:
+        """Emit a UI-neutral progress event to the optional callback.
+
+        No-op when no callback is registered; tracks the most recent stage so
+        failures can be attributed to the stage that was in flight.
+        """
+        self._last_progress_stage = stage
+        if self.on_progress is not None:
+            self.on_progress(ProgressEvent(stage=stage, message=message, level=level, resource_id=resource_id))
+
     def _generate_postgres_password(self, length: int = 32) -> str:
-        """Generate a secure random password for PostgreSQL."""
-        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        """Generate a secure random password for PostgreSQL.
+
+        The password is embedded in shell scripts (UserData) and JSON templates,
+        so the alphabet must avoid characters that expand or escape there:
+        $ ` \\ " ' — a password containing e.g. "$K" aborts UserData with
+        "unbound variable" under set -u.
+        """
+        alphabet = string.ascii_letters + string.digits + "!@#%^*-_+=."
         return "".join(secrets.choice(alphabet) for _ in range(length))
 
     def _log_selection(self, selection: InstanceSelection) -> None:
@@ -131,8 +160,15 @@ class Tier1Orchestrator:
         """
         try:
             self._deploy_start_time = time.monotonic()
-            return self._deploy_impl(config)
+            final_state = self._deploy_impl(config)
+            self._emit_progress("finalize", f"Deployment state saved for {config.stack_name}")
+            return final_state
         except Exception as exc:
+            self._emit_progress(
+                self._last_progress_stage or "validate",
+                f"Deployment failed: {exc}",
+                level="error",
+            )
             # Attempt to load partial state to check for created resources
             partial_state = asyncio.run(self.state_manager.load_deployment(config.stack_name))
 
@@ -207,9 +243,7 @@ class Tier1Orchestrator:
         if result.errors:
             error_summary = "; ".join(result.errors)
             raise RuntimeError(f"Rollback encountered errors: {error_summary}")
-
-        # Archive the failed deployment state after successful cleanup
-        asyncio.run(self.state_manager.archive_deployment(partial_state.stack_name))
+        # destroy() already archived the state and removed the deployment file.
 
     def _save_failed_state(self, partial_state: DeploymentState, error: Exception) -> None:
         """
@@ -219,32 +253,17 @@ class Tier1Orchestrator:
             partial_state: Partial deployment state
             error: The exception that caused the failure
         """
-        # Update state to reflect failure
+        # Update state to reflect failure.
+        # Copy the WHOLE partial state: rebuilding it field-by-field silently
+        # dropped Tier 2/3 fields (alb_arn, target_group_arn, certificate_arn),
+        # so a later destroy skipped the ordered ALB teardown and cascaded into
+        # subnet/VPC DependencyViolations (observed live).
         # Note: Error message is logged and displayed to user, not stored in state
-        failed_state = DeploymentState(
-            stack_name=partial_state.stack_name,
-            status="failed",
-            created_at=partial_state.created_at,
-            updated_at=datetime.now(UTC),
-            vpc_id=partial_state.vpc_id,
-            subnet_ids=partial_state.subnet_ids,
-            storage_subnet_id=partial_state.storage_subnet_id,
-            security_group_id=partial_state.security_group_id,
-            efs_id=partial_state.efs_id,
-            efs_mount_target_id=partial_state.efs_mount_target_id,
-            efs_mount_target_ip=partial_state.efs_mount_target_ip,
-            iam_role_name=partial_state.iam_role_name,
-            iam_role_arn=partial_state.iam_role_arn,
-            iam_instance_profile_name=partial_state.iam_instance_profile_name,
-            iam_instance_profile_arn=partial_state.iam_instance_profile_arn,
-            instance_id=partial_state.instance_id or "",
-            keypair_name=partial_state.keypair_name,
-            public_ip=partial_state.public_ip,
-            private_ip=partial_state.private_ip,
-            n8n_url=partial_state.n8n_url,
-            cost=partial_state.cost,
-            config=partial_state.config,
-            resource_provenance=partial_state.resource_provenance,
+        failed_state = partial_state.model_copy(
+            update={
+                "status": "failed",
+                "updated_at": datetime.now(UTC),
+            }
         )
 
         asyncio.run(self.state_manager.save_deployment(failed_state))
@@ -273,32 +292,57 @@ class Tier1Orchestrator:
             )
 
         start_time = self._deploy_start_time or time.monotonic()
+        self._emit_progress("spot", f"Selecting compute capacity for {config.instance_type}")
         selection = self._select_instance(config)
 
         # Step 1: Setup networking (VPC, subnets)
+        self._emit_progress("vpc", "Configuring VPC networking")
         vpc_info = self._setup_networking(config, selection)
+        self._emit_progress("vpc", "Networking ready", resource_id=vpc_info["vpc"].vpc_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "networking")
 
         # Step 2: Create or reuse security group
+        self._emit_progress("sg", "Configuring security group")
         sg_id, sg_provenance = self._create_security_group(config, vpc_info)
+        self._emit_progress("sg", "Security group ready", resource_id=sg_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "security group creation")
 
         # Step 3: Create EFS filesystem and mount target
+        self._emit_progress("efs", "Creating EFS filesystem and mount targets")
         efs_id, mt_id, mt_ip = self._create_storage(config, vpc_info, sg_id)
+        self._emit_progress("efs", "EFS filesystem available", resource_id=efs_id)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "storage setup")
 
         # Step 4: Save partial state after EFS creation
         self._save_partial_state(config, vpc_info, sg_id, sg_provenance, efs_id, mt_id, mt_ip, selection)
 
         # Step 5: Create IAM role and instance profile for EFS mount
+        self._emit_progress("iam", "Creating IAM role and instance profile")
         iam_info = self._create_iam_resources(config)
         self._check_timeout(start_time, config.rollback_timeout_minutes, "IAM setup")
 
+        if config.tier in {"automation", "gpu"} and selection.is_spot:
+            account_id = iam_info["role_arn"].split(":")[4]
+            lease_table_name = f"{config.stack_name}-spot-lease"[:255]
+            log_group_name = f"/geusemaker/{config.stack_name}/spot-events"
+            self.iam_service.attach_spot_runtime_policy(
+                iam_info["role_name"],
+                lease_table_arn=(f"arn:aws:dynamodb:{self.region}:{account_id}:table/{lease_table_name}"),
+                log_group_arn=(f"arn:aws:logs:{self.region}:{account_id}:log-group:{log_group_name}"),
+            )
+
         # Step 6: Generate UserData script
-        userdata_payload, postgres_password = self._generate_userdata(config, efs_id, mt_ip)
+        self._emit_progress("userdata", "Generating instance UserData")
+        userdata_payload, postgres_password = self._generate_userdata(
+            config,
+            efs_id,
+            mt_ip,
+            spot_protection_enabled=(config.tier in {"automation", "gpu"} and selection.is_spot),
+        )
         self._check_timeout(start_time, config.rollback_timeout_minutes, "UserData generation")
 
         # Step 7: Launch EC2 instance with IAM instance profile
+        self._emit_progress("ec2", f"Launching {config.instance_type} instance")
         instance_info = self._launch_instance(
             config,
             vpc_info,
@@ -307,6 +351,7 @@ class Tier1Orchestrator:
             iam_info,
             selection,
         )
+        self._emit_progress("ec2", "Instance running", resource_id=instance_info["instance_id"])
         self._check_timeout(start_time, config.rollback_timeout_minutes, "instance launch")
 
         # If spot capacity vanished at launch and we fell back to on-demand,
@@ -499,17 +544,27 @@ class Tier1Orchestrator:
         # Wait for EFS to transition from "creating" to "available" state
         self.efs_service.wait_for_available(efs_id)
 
-        # Create mount target in the storage subnet
+        # A production Spot replacement may land in any configured public AZ. EFS
+        # requires one mount target per AZ, so provision that coverage up front.
         chosen_storage_subnet_id = vpc_info["chosen_storage_subnet_id"]
-        mt_id = self.efs_service.create_mount_target(
-            fs_id=efs_id,
-            subnet_id=chosen_storage_subnet_id,
-            security_groups=[sg_id],
-        )
+        mount_subnet_ids = [chosen_storage_subnet_id]
+        if config.tier in {"automation", "gpu"} and config.use_spot:
+            seen_azs: set[str] = set()
+            mount_subnet_ids = []
+            for subnet in vpc_info["vpc"].public_subnets:
+                if subnet.availability_zone not in seen_azs:
+                    mount_subnet_ids.append(subnet.subnet_id)
+                    seen_azs.add(subnet.availability_zone)
 
-        # Wait for mount target to become available
-        self.efs_service.wait_for_mount_target_available(mt_id)
+        mount_target_ids = [
+            self.efs_service.create_mount_target(fs_id=efs_id, subnet_id=subnet_id, security_groups=[sg_id])
+            for subnet_id in mount_subnet_ids
+        ]
+        for mount_target_id in mount_target_ids:
+            self.efs_service.wait_for_mount_target_available(mount_target_id)
+        mt_id = mount_target_ids[0]
         mt_ip = self.efs_service.get_mount_target_ip(mt_id)
+        vpc_info["efs_mount_target_ids"] = mount_target_ids
 
         return efs_id, mt_id, mt_ip
 
@@ -557,6 +612,7 @@ class Tier1Orchestrator:
             security_group_id=sg_id,
             efs_id=efs_id,
             efs_mount_target_id=mt_id,
+            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
             efs_mount_target_ip=mt_ip,
             instance_id="",  # Not created yet
             keypair_name=config.keypair_name or "",
@@ -623,7 +679,14 @@ class Tier1Orchestrator:
             "profile_arn": profile_arn,
         }
 
-    def _generate_userdata(self, config: DeploymentConfig, efs_id: str, mt_ip: str) -> tuple[bytes, str]:
+    def _generate_userdata(
+        self,
+        config: DeploymentConfig,
+        efs_id: str,
+        mt_ip: str,
+        *,
+        spot_protection_enabled: bool = False,
+    ) -> tuple[bytes, str]:
         """
         Generate UserData script for EC2 instance initialization.
 
@@ -678,6 +741,12 @@ class Tier1Orchestrator:
             postgres_password=postgres_password,
             use_runtime_bundle=config.use_runtime_bundle,
             runtime_bundle_path=config.runtime_bundle_path,
+            spot_protection_enabled=spot_protection_enabled,
+            spot_lease_table_name=(f"{config.stack_name}-spot-lease"[:255] if spot_protection_enabled else None),
+            spot_auto_scaling_group_name=(f"{config.stack_name}-spot-asg" if spot_protection_enabled else None),
+            spot_log_group_name=(f"/geusemaker/{config.stack_name}/spot-events" if spot_protection_enabled else None),
+            spot_launch_hook_name=(f"{config.stack_name[:42]}-launch" if spot_protection_enabled else None),
+            spot_termination_hook_name=(f"{config.stack_name[:39]}-terminate" if spot_protection_enabled else None),
         )
         userdata_script = self.userdata_generator.generate(userdata_config)
         userdata_payload = self._compress_userdata(userdata_script)
@@ -692,7 +761,7 @@ class Tier1Orchestrator:
         userdata_payload: bytes,
         iam_info: dict[str, str],
         selection: InstanceSelection,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """
         Launch EC2 instance with UserData and IAM instance profile.
 
@@ -745,6 +814,46 @@ class Tier1Orchestrator:
                 },
             },
         ]
+
+        if config.tier in {"automation", "gpu"} and selection.is_spot:
+            console.print(
+                f"{EMOJI['info']} Creating production Spot Auto Scaling group with Capacity Rebalancing...",
+                verbosity="info",
+            )
+            tags = {
+                "Name": config.stack_name,
+                "Stack": config.stack_name,
+                "Tier": config.tier,
+                "ManagedBy": "GeuseMaker",
+            }
+            resources = self.spot_automation_service.create(
+                stack_name=config.stack_name,
+                image_id=ami_id,
+                instance_type=config.instance_type,
+                subnet_ids=vpc_info["public_subnet_ids"],
+                security_group_ids=[sg_id],
+                instance_profile_name=iam_info["profile_name"],
+                user_data=userdata_payload,
+                block_device_mappings=block_device_mappings,
+                tags=tags,
+                key_name=config.keypair_name,
+            )
+            self.ec2_service.wait_for_running(resources.instance_id)
+            instance_desc = self.ec2_service.describe_instance(resources.instance_id)
+            return {
+                "instance_id": resources.instance_id,
+                "public_ip": instance_desc.get("PublicIpAddress"),
+                "private_ip": instance_desc.get("PrivateIpAddress", ""),
+                "spot_fallback_to_on_demand": False,
+                "launch_template_id": resources.launch_template_id,
+                "auto_scaling_group_name": resources.auto_scaling_group_name,
+                "spot_event_log_group": resources.log_group_name,
+                "spot_event_rule_names": list(resources.event_rule_names),
+                "spot_lease_table_name": resources.lease_table_name,
+                "spot_lifecycle_hook_names": list(resources.lifecycle_hook_names),
+                "spot_coordinator_function_name": resources.coordinator_function_name,
+                "spot_coordinator_role_name": resources.coordinator_role_name,
+            }
 
         # Launch instance with IAM instance profile for EFS mount
         # Use Name (simpler and more reliable for newly created profiles in same region)
@@ -932,12 +1041,21 @@ class Tier1Orchestrator:
             security_group_id=sg_id,
             efs_id=efs_id,
             efs_mount_target_id=mt_id,
+            efs_mount_target_ids=vpc_info.get("efs_mount_target_ids", [mt_id]),
             efs_mount_target_ip=mt_ip,
             iam_role_name=iam_info["role_name"],
             iam_role_arn=iam_info["role_arn"],
             iam_instance_profile_name=iam_info["profile_name"],
             iam_instance_profile_arn=iam_info["profile_arn"],
             instance_id=instance_id,
+            launch_template_id=instance_info.get("launch_template_id"),
+            auto_scaling_group_name=instance_info.get("auto_scaling_group_name"),
+            spot_event_log_group=instance_info.get("spot_event_log_group"),
+            spot_event_rule_names=instance_info.get("spot_event_rule_names", []),
+            spot_lease_table_name=instance_info.get("spot_lease_table_name"),
+            spot_lifecycle_hook_names=instance_info.get("spot_lifecycle_hook_names", []),
+            spot_coordinator_function_name=instance_info.get("spot_coordinator_function_name"),
+            spot_coordinator_role_name=instance_info.get("spot_coordinator_role_name"),
             keypair_name=config.keypair_name or "",
             public_ip=public_ip,
             private_ip=private_ip,

@@ -72,7 +72,8 @@ def test_efs_mount_command_with_correct_id(base_config: UserDataConfig) -> None:
     script = gen.generate(base_config)
 
     # Verify EFS mount with IAM authentication
-    assert 'MOUNT_OPTS="tls,iam,addr=${EFS_MOUNT_ADDR}"' in script
+    assert 'MOUNT_OPTS="tls,iam"' in script
+    assert 'MOUNT_OPTS="${MOUNT_OPTS},addr=${EFS_MOUNT_ADDR}"' in script
     assert "mount -t efs -o" in script
     assert "fs-12345678:/ /mnt/efs" in script
     assert "amazon-efs-utils" in script
@@ -152,6 +153,86 @@ def test_tier_automation_configuration() -> None:
 
     # Automation tier should have metrics enabled
     assert "N8N_METRICS=true" in script
+
+
+def test_production_spot_protection_installs_single_writer_guard() -> None:
+    """Production Spot userdata should fence EFS writers and drain on AWS notices."""
+    config = UserDataConfig(
+        efs_id="fs-12345678",
+        efs_dns="fs-12345678.efs.us-east-1.amazonaws.com",
+        tier="automation",
+        stack_name="test-stack",
+        region="us-east-1",
+        postgres_password="test-password-123",
+        spot_protection_enabled=True,
+        spot_lease_table_name="test-stack-lease",
+        spot_auto_scaling_group_name="test-stack-asg",
+        spot_target_group_arn="arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/test/abc",
+        spot_log_group_name="/geusemaker/test-stack/spot-events",
+        spot_termination_hook_name="test-stack-terminate",
+        spot_launch_hook_name="test-stack-launch",
+    )
+
+    script = UserDataGenerator().generate(config)
+
+    assert "geusemaker-spot-guard.service" in script
+    assert "meta-data/spot/instance-action" in script
+    assert "events/recommendations/rebalance" in script
+    assert "attribute_not_exists(#o) OR ExpiresAt < :now OR #o = :owner" in script
+    assert "deregister-targets" in script
+    assert "complete-lifecycle-action" in script
+    assert "geusemaker-spot-drain.service" in script
+    assert "Using EFS DNS so this replacement resolves its local-AZ mount target" in script
+    assert 'MOUNT_OPTS="tls,iam"' in script
+    assert "LAUNCH_HOOK=test-stack-launch" in script
+    assert "docker compose -f \"$COMPOSE_FILE\" stop -t 45" in script
+    assert script.index("spot-lease-acquired") < script.index('SERVICES_GUARD="/var/lib/geusemaker/services-started"')
+
+
+def test_dev_userdata_does_not_install_spot_guard(base_config: UserDataConfig) -> None:
+    """The opt-in production runtime must not alter development bootstrap behavior."""
+    script = UserDataGenerator().generate(base_config)
+
+    assert "geusemaker-spot-guard.service" not in script
+    assert "meta-data/spot/instance-action" not in script
+
+
+def test_spot_protection_rejects_missing_runtime_resources() -> None:
+    """An incomplete production wiring should fail bootstrap instead of running unfenced."""
+    config = UserDataConfig(
+        efs_id="fs-12345678",
+        efs_dns="fs-12345678.efs.us-east-1.amazonaws.com",
+        tier="gpu",
+        stack_name="test-stack",
+        region="us-east-1",
+        postgres_password="test-password-123",
+        spot_protection_enabled=True,
+    )
+
+    script = UserDataGenerator().generate(config)
+
+    assert "Spot protection requires lease table, ASG, and log group inputs" in script
+
+
+def test_spot_guard_can_discover_target_group_from_asg() -> None:
+    """Early userdata generation must not require an ALB ARN that does not exist yet."""
+    config = UserDataConfig(
+        efs_id="fs-12345678",
+        efs_dns="fs-12345678.efs.us-east-1.amazonaws.com",
+        tier="automation",
+        stack_name="test-stack",
+        region="us-east-1",
+        postgres_password="test-password-123",
+        spot_protection_enabled=True,
+        spot_lease_table_name="test-stack-lease",
+        spot_auto_scaling_group_name="test-stack-asg",
+        spot_log_group_name="/geusemaker/test-stack/spot-events",
+    )
+
+    script = UserDataGenerator().generate(config)
+
+    assert "describe-load-balancer-target-groups" in script
+    assert 'TARGET_GROUP_ARN=' in script
 
 
 def test_tier_automation_external_webhook_host_is_used() -> None:

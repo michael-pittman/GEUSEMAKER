@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 import click
 
 from geusemaker.cli import console
-from geusemaker.cli.branding import DEPLOY_BANNER, EMOJI
+from geusemaker.cli.branding import COMPACT_BANNER, DEPLOY_BANNER, EMOJI
 from geusemaker.cli.interactive import (
     DeploymentRunner,
     DeploymentValidationFailed,
@@ -51,6 +52,7 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
 
 
 @click.command("deploy")
+@click.option("--tui", is_flag=True, help="Open the optional full-screen deploy workspace.")
 @click.option(
     "--config",
     type=click.Path(exists=True, dir_okay=False, resolve_path=True),
@@ -68,6 +70,19 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
     default="dev",
     show_default=True,
     help="Deployment tier.",
+)
+@click.option(
+    "--workload",
+    type=click.Choice(["cpu", "gpu"], case_sensitive=False),
+    default=None,
+    help="Compute workload, independent of deployment topology.",
+)
+@click.option(
+    "--instance-preference",
+    type=click.Choice(["balanced", "lowest_cost", "highest_availability", "performance"]),
+    default="balanced",
+    show_default=True,
+    help="Policy used to rank eligible instance recommendations.",
 )
 @click.option(
     "--region",
@@ -219,10 +234,13 @@ def _collect_overrides(ctx: click.Context, **values: Any) -> dict[str, Any]:
 @click.pass_context
 def deploy(
     ctx: click.Context,
+    tui: bool,
     config: str | None,
     interactive: bool | None,
     stack_name: str | None,
     tier: str,
+    workload: str | None,
+    instance_preference: str,
     region: str,
     instance_type: str,
     os_type: str,
@@ -254,20 +272,50 @@ def deploy(
     output: str,
 ) -> None:
     """Create a new deployment (config build + AWS client bootstrap)."""
-    # Show the wicked deploy banner
-    console.print(DEPLOY_BANNER)
-    console.print()
+    # Determine output format BEFORE any rendering: json/yaml reserve stdout for
+    # exactly one structured document (diagnostics are diverted to stderr).
+    output_format = OutputFormat(output.lower())
+
+    tui_requested = tui or os.environ.get("GEUSEMAKER_UI", "").lower() == "tui"
+    if tui_requested:
+        if output_format != OutputFormat.TEXT:
+            raise click.UsageError("--tui cannot be combined with --output json|yaml.")
+        from geusemaker.cli.commands.tui import launch_tui
+
+        launch_tui(initial_screen="deploy", stack_name=stack_name)
+        return
 
     factory = AWSClientFactory()
     state_manager = StateManager()
     loader = ConfigLoader()
-    output_format = OutputFormat(output.lower())
 
     interactive_requested = interactive if interactive is not None else (stack_name is None and config is None)
+
+    if interactive_requested and output_format != OutputFormat.TEXT:
+        _emit_error(
+            build_response(
+                status="error",
+                message="Interactive mode is incompatible with --output json|yaml. "
+                "Pass --no-interactive with CLI options or --config.",
+                error_code="usage",
+            ),
+            output_format,
+        )
+        raise SystemExit(2)
+
+    if output_format == OutputFormat.TEXT:
+        # Full artwork only for the interactive wizard; a compact line otherwise.
+        if interactive_requested:
+            console.print(DEPLOY_BANNER)
+            console.print()
+        else:
+            console.print(f"[bold cyan]{COMPACT_BANNER}[/bold cyan]\n", verbosity="info")
     cli_overrides = _collect_overrides(
         ctx,
         stack_name=stack_name,
         tier=tier.lower(),
+        workload=workload.lower() if workload else None,
+        instance_preference=instance_preference.lower(),
         region=region,
         instance_type=instance_type,
         os_type=os_type.lower(),
@@ -303,6 +351,8 @@ def deploy(
         initial_state = {
             "stack_name": prefill.get("stack_name", stack_name),
             "tier": prefill.get("tier", tier.lower()),
+            "workload": prefill.get("workload", workload),
+            "instance_preference": prefill.get("instance_preference", instance_preference.lower()),
             "region": prefill.get("region", region),
             "use_spot": prefill.get("use_spot", use_spot),
             "instance_type": prefill.get("instance_type", instance_type),

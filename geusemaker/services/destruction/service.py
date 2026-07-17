@@ -23,6 +23,7 @@ from geusemaker.services.efs import EFSService
 from geusemaker.services.iam import IAMService
 from geusemaker.services.route53 import Route53Service
 from geusemaker.services.sg import SecurityGroupService
+from geusemaker.services.spot_automation import SpotAutomationService
 
 
 class DestructionService:
@@ -54,6 +55,7 @@ class DestructionService:
         self.cloudfront = CloudFrontService(self.client_factory, region=region)
         self.acm = ACMService(self.client_factory, region=region)
         self.route53 = Route53Service(self.client_factory)
+        self.spot_automation = SpotAutomationService(self.client_factory, region=region)
         self._ec2_raw = ec2_client or self.client_factory.get_client("ec2", region)
         self._elbv2_raw = elbv2_client or self.client_factory.get_client("elbv2", region)
 
@@ -122,6 +124,28 @@ class DestructionService:
         except Exception as exc:  # noqa: BLE001
             errors.append(f"CloudFront cleanup failed: {exc}")
 
+        # Stop replacement automation before deleting its ALB target group or IAM profile.
+        try:
+            if state.auto_scaling_group_name or state.launch_template_id:
+                _progress("Deleting Spot interruption monitoring and Auto Scaling resources")
+                if not dry_run:
+                    self.spot_automation.delete(
+                        asg_name=state.auto_scaling_group_name,
+                        launch_template_id=state.launch_template_id,
+                        rule_names=state.spot_event_rule_names,
+                        log_group_name=state.spot_event_log_group,
+                        lease_table_name=state.spot_lease_table_name,
+                        lifecycle_hook_names=state.spot_lifecycle_hook_names,
+                        coordinator_function_name=state.spot_coordinator_function_name,
+                        coordinator_role_name=state.spot_coordinator_role_name,
+                    )
+                if state.auto_scaling_group_name:
+                    deleted.append(self._deleted("auto_scaling_group", state.auto_scaling_group_name))
+                if state.launch_template_id:
+                    deleted.append(self._deleted("launch_template", state.launch_template_id))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Spot automation cleanup failed: {exc}")
+
         # ALB cleanup (must be before EC2 instance termination)
         # Order: deregister targets → delete listeners → delete ALB → delete target group
         # The target group cannot be deleted while a listener still references it,
@@ -173,10 +197,7 @@ class DestructionService:
                 else:
                     _progress("Deleting target group")
                     if not dry_run:
-                        try:
-                            self._elbv2_raw.delete_target_group(TargetGroupArn=state.target_group_arn)
-                        except Exception as exc:  # noqa: BLE001
-                            errors.append(f"Target group deletion failed: {exc}")
+                        self._delete_target_group_with_retry(state.target_group_arn, errors)
                     deleted.append(self._deleted("target_group", state.target_group_arn))
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Target group cleanup failed: {exc}")
@@ -190,7 +211,7 @@ class DestructionService:
             errors.append(f"DNS/certificate cleanup failed: {exc}")
 
         try:
-            if state.instance_id:
+            if state.instance_id and not state.auto_scaling_group_name:
                 if provenance.get("instance") == "reused":
                     _progress("Preserving reused EC2 instance")
                     preserved.append(
@@ -454,6 +475,32 @@ class DestructionService:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"ACM validation record cleanup failed: {exc}")
 
+    def _delete_target_group_with_retry(
+        self,
+        target_group_arn: str,
+        errors: list[str],
+        max_attempts: int = 6,
+        delay_seconds: int = 10,
+    ) -> bool:
+        """Delete a target group, retrying while the (async) ALB deletion releases it.
+
+        delete_load_balancer returns before listeners are torn down, so an
+        immediate delete_target_group races it and fails with ResourceInUse.
+        """
+        import time as _time
+
+        for attempt in range(max_attempts):
+            try:
+                self._elbv2_raw.delete_target_group(TargetGroupArn=target_group_arn)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                if "ResourceInUse" in str(exc) and attempt < max_attempts - 1:
+                    _time.sleep(delay_seconds)
+                    continue
+                errors.append(f"Target group deletion failed: {exc}")
+                return False
+        return False
+
     def _delete_certificate_with_retry(
         self,
         certificate_arn: str,
@@ -614,11 +661,12 @@ class DestructionService:
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Listener cleanup for ALB {lb_name} failed: {exc}")
 
-                # Delete target groups associated with this ALB
+                # Delete target groups associated with this ALB (with retry:
+                # listener deletion is asynchronous and briefly holds them)
                 try:
                     tg_resp = self._elbv2_raw.describe_target_groups(LoadBalancerArn=lb_arn)
                     for tg in tg_resp.get("TargetGroups", []):
-                        self._elbv2_raw.delete_target_group(TargetGroupArn=tg["TargetGroupArn"])
+                        self._delete_target_group_with_retry(tg["TargetGroupArn"], errors)
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"Target group cleanup for ALB {lb_name} failed: {exc}")
 

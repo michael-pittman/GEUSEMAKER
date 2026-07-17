@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from geusemaker.infra import AWSClientFactory
 from geusemaker.models import DeploymentState
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.ssm import SSMService
 
 
@@ -15,10 +16,12 @@ class ContainerUpdater:
         client_factory: AWSClientFactory | None = None,
         region: str = "us-east-1",
         ssm_service: SSMService | None = None,
+        instance_resolver: InstanceResolver | None = None,
     ):
         self.client_factory = client_factory or AWSClientFactory()
         self.region = region
         self.ssm = ssm_service or SSMService(self.client_factory, region=region)
+        self.instance_resolver = instance_resolver or InstanceResolver(self.client_factory, region=region)
 
     def update_container_images(self, state: DeploymentState, images: dict[str, str]) -> list[str]:
         """Update docker-compose images on the host via SSM."""
@@ -26,8 +29,9 @@ class ContainerUpdater:
             return []
 
         script = self._build_script(images)
+        instance_id = self.instance_resolver.resolve(state).instance_id
         result = self.ssm.run_shell_script(
-            state.instance_id,
+            instance_id,
             [script],
             comment=f"GeuseMaker update: {state.stack_name}",
             timeout_seconds=900,

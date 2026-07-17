@@ -1,5 +1,13 @@
 # GeuseMaker: AI Infrastructure Platform - Product Requirements Document
 
+**Status:** Current canonical PRD
+
+**Last implementation-alignment review:** 2026-07-16
+
+Topology and workload are independent in the current product: `tier` selects the
+network/edge topology, while `workload` selects CPU or GPU compute. See
+[instance recommendations](../instance-recommendation.md).
+
 ## Table of Contents
 
 - [GeuseMaker: AI Infrastructure Platform - Product Requirements Document](#table-of-contents)
@@ -15,10 +23,11 @@
       - [1.3 Vector Database](./core-requirements.md#13-vector-database)
       - [1.4 Web Scraping Service](./core-requirements.md#14-web-scraping-service)
       - [1.5 Supporting Services](./core-requirements.md#15-supporting-services)
-    - [2. Deployment Tiers](./core-requirements.md#2-deployment-tiers)
-      - [Tier 1: Development (CPU-Based)](./core-requirements.md#tier-1-development-cpu-based)
-      - [Tier 2: Automation Engineer (Minimal Stack)](./core-requirements.md#tier-2-automation-engineer-minimal-stack)
-      - [Tier 3: GPU-Optimized (AI Workloads)](./core-requirements.md#tier-3-gpu-optimized-ai-workloads)
+    - [2. Deployment Topologies and Workloads](./core-requirements.md#2-deployment-topologies-and-workloads)
+      - [Tier 1: Development](./core-requirements.md#tier-1-development-dev)
+      - [Tier 2: Production](./core-requirements.md#tier-2-production-automation)
+      - [Tier 3: Global](./core-requirements.md#tier-3-global-gpu-legacy-key)
+      - [Workload and recommendation policy](./core-requirements.md#workload-and-recommendation-policy)
     - [3. User Experience](./core-requirements.md#3-user-experience)
       - [3.1 Interactive Mode](./core-requirements.md#31-interactive-mode)
       - [3.2 Non-Interactive Mode](./core-requirements.md#32-non-interactive-mode)

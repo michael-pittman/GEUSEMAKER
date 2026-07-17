@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from click.testing import CliRunner
 
 from geusemaker.cli.main import cli
@@ -96,6 +98,46 @@ def test_deploy_shows_validation_report_and_fails(monkeypatch):
 
     assert result.exit_code == 2
     assert "FAIL" in result.output
+
+
+def test_deploy_json_output_is_single_clean_document(monkeypatch):
+    """--output json must emit exactly one parseable document on stdout (diagnostics on stderr)."""
+    monkeypatch.setattr("geusemaker.cli.interactive.runner.PreDeploymentValidator", PassingValidator)
+    monkeypatch.setattr("geusemaker.cli.interactive.runner.Tier1Orchestrator", DummyOrchestrator)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "deploy",
+            "--stack-name",
+            "demo",
+            "--tier",
+            "dev",
+            "--region",
+            "us-east-1",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    # The ENTIRE stdout must be one JSON document — no banner, no progress noise.
+    # (result.output is the combined stream; result.stdout is stdout alone.)
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["data"]["stack_name"] == "demo"
+
+
+def test_deploy_json_output_rejects_interactive(monkeypatch):  # noqa: ARG001
+    """Interactive mode cannot produce a structured document; fail fast with a parseable error."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["deploy", "--output", "json"])
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "usage"
 
 
 def test_deploy_no_spot_flag_selects_on_demand(monkeypatch):

@@ -1,5 +1,9 @@
 # GeuseMaker: AI Infrastructure Platform - Product Requirements Document
 
+> **Historical monolithic snapshot.** The maintained PRD is the sectioned
+> [PRD index](prd/index.md). This file remains for traceability and should not receive
+> independent requirement edits.
+
 **Version**: 2.0 (Fresh Start)
 **Status**: Draft
 **Last Updated**: 2025-01-18

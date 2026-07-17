@@ -1,5 +1,9 @@
 # GeuseMaker Architecture Document
 
+> **Historical monolithic snapshot.** The maintained architecture is the sectioned
+> [architecture index](architecture/index.md). This file remains for traceability and
+> should not receive independent architecture edits.
+
 ## 1. Introduction
 
 This document outlines the overall project architecture for GeuseMaker, including backend systems, shared services, and non-UI specific concerns. Its primary goal is to serve as the guiding architectural blueprint for AI-driven development, ensuring consistency and adherence to chosen patterns and technologies.
@@ -4154,4 +4158,3 @@ make release       # Build + publish to PyPI
 ---
 
 _🎉 Architecture document complete! Ready for implementation._
-

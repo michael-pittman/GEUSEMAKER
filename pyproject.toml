@@ -12,13 +12,13 @@ license = { text = "MIT" }
 authors = [{ name = "GeuseMaker Team" }]
 dependencies = [
   "click>=8.1",
-  "rich>=13.9",
+  "rich>=14.2,<16",
   "pydantic>=2.9",
   "boto3>=1.35",
   "httpx>=0.27",
   "filelock>=3.14",
   "pyyaml>=6.0",
-  "questionary>=2.0",
+  "questionary>=2.1,<3",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +31,7 @@ dev = [
   "mypy>=1.11",
   "types-PyYAML>=6.0",
 ]
+tui = ["textual>=8.2,<9"]
 
 [project.scripts]
 geusemaker = "geusemaker.cli.main:cli"

@@ -23,6 +23,7 @@ from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.services.ec2 import EC2Service
 from geusemaker.services.health import HealthCheckClient
 from geusemaker.services.health.services import NGINX_ROUTES
+from geusemaker.services.instance_resolver import InstanceResolver
 
 
 @click.command("status")
@@ -65,7 +66,9 @@ def status(stack_name: str, state_dir: str | None, output: str) -> None:
     ec2_service = EC2Service(client_factory, region=state.config.region)
 
     try:
-        instance_desc = ec2_service.describe_instance(state.instance_id)
+        active_instance = InstanceResolver(client_factory, region=state.config.region).resolve(state)
+        state_manager.save_deployment_sync(state)
+        instance_desc = ec2_service.describe_instance(active_instance.instance_id)
         instance_state = instance_desc.get("State", {}).get("Name", "unknown")
         instance_type = instance_desc.get("InstanceType", state.config.instance_type)
         public_ip = instance_desc.get("PublicIpAddress")
@@ -86,27 +89,10 @@ def status(stack_name: str, state_dir: str | None, output: str) -> None:
     health_status = {}
     if instance_state == "running" and (public_ip or private_ip):
         host = public_ip or private_ip
-        health_client = HealthCheckClient()
-
-        # Service ports bind to 127.0.0.1 on the instance; probe through the
-        # host NGINX reverse proxy (port 80) via its path routes instead.
-        services = [
-            ("n8n", NGINX_ROUTES["n8n"]),
-            ("Qdrant", NGINX_ROUTES["qdrant"]),
-            ("Ollama", NGINX_ROUTES["ollama"]),
-            ("Crawl4AI", NGINX_ROUTES["crawl4ai"]),
-            ("PostgreSQL", None),  # TCP check only
-        ]
-
-        for service_name, path in services:
-            try:
-                if path:
-                    result = asyncio.run(health_client.check_http(f"http://{host}{path}", timeout_seconds=3))
-                else:
-                    result = asyncio.run(health_client.check_tcp(host, 5432, timeout_seconds=3))
-                health_status[service_name] = "healthy" if result.healthy else "unhealthy"
-            except Exception:  # noqa: BLE001
-                health_status[service_name] = "unreachable"
+        health_status = asyncio.run(_check_services(host))
+        # PostgreSQL is intentionally not exposed outside the instance (no host
+        # port, no SG rule); n8n's health implies its database is reachable.
+        health_status["PostgreSQL"] = "internal"
     else:
         # Instance not running, mark all services as unavailable
         for service_name in ["n8n", "Qdrant", "Ollama", "Crawl4AI", "PostgreSQL"]:
@@ -126,6 +112,31 @@ def status(stack_name: str, state_dir: str | None, output: str) -> None:
             health_status,
             output_format,
         )
+
+
+async def _check_services(host: str) -> dict[str, str]:
+    """Probe all services through NGINX path routes inside one event loop.
+
+    A single loop matters: httpx.AsyncClient binds to the loop it first runs
+    on, so per-service asyncio.run() calls fail from the second check onward.
+    """
+    client = HealthCheckClient()
+    services = [
+        ("n8n", NGINX_ROUTES["n8n"]),
+        ("Qdrant", NGINX_ROUTES["qdrant"]),
+        ("Ollama", NGINX_ROUTES["ollama"]),
+        ("Crawl4AI", NGINX_ROUTES["crawl4ai"]),
+    ]
+
+    async def _probe(name: str, path: str) -> tuple[str, str]:
+        try:
+            result = await client.check_http(f"http://{host}{path}", timeout_seconds=5)
+            return name, "healthy" if result.healthy else "unhealthy"
+        except Exception:  # noqa: BLE001
+            return name, "unreachable"
+
+    results = await asyncio.gather(*(_probe(name, path) for name, path in services))
+    return dict(results)
 
 
 def _display_status_text(
@@ -176,7 +187,7 @@ def _display_status_text(
         "Qdrant": NGINX_ROUTES["qdrant"],
         "Ollama": NGINX_ROUTES["ollama"],
         "Crawl4AI": NGINX_ROUTES["crawl4ai"],
-        "PostgreSQL": ":5432 (TCP)",
+        "PostgreSQL": "(not exposed)",
     }
 
     for service_name, route in service_routes.items():
@@ -186,6 +197,7 @@ def _display_status_text(
             "unhealthy": "red",
             "unreachable": "yellow",
             "unavailable": "dim",
+            "internal": "dim",
         }
         status_color = status_colors.get(status_text, "white")
         status_icon = {
@@ -193,6 +205,7 @@ def _display_status_text(
             "unhealthy": "✗",
             "unreachable": "⚠",
             "unavailable": "—",
+            "internal": "•",
         }
         icon = status_icon.get(status_text, "?")
 

@@ -43,17 +43,21 @@ else
     # Install EFS utils (supports Amazon Linux and Ubuntu)
     pkg_update_once
 
-    EFS_MOUNT_ADDR="{{ efs_mount_target_ip | default('', true) }}"
+    EFS_MOUNT_ADDR="{{ '' if spot_protection_enabled else (efs_mount_target_ip | default('', true)) }}"
     EFS_MOUNT_HOST="{{ efs_dns }}"
     if [ -z "$EFS_MOUNT_ADDR" ]; then
+{% if spot_protection_enabled %}
+        echo "Using EFS DNS so this replacement resolves its local-AZ mount target"
+{% else %}
         echo "ERROR: EFS mount target IP not provided; cannot mount without DNS."
         exit 1
+{% endif %}
     fi
     # Pin DNS to the mount target IP to avoid amazon-efs-utils DNS/DescribeMountTargets lookups
-    if ! grep -q "$EFS_MOUNT_HOST" /etc/hosts; then
+    if [ -n "$EFS_MOUNT_ADDR" ] && ! grep -q "$EFS_MOUNT_HOST" /etc/hosts; then
         echo "$EFS_MOUNT_ADDR $EFS_MOUNT_HOST" >> /etc/hosts
     fi
-    echo "Using EFS mount target IP: $EFS_MOUNT_ADDR"
+    [ -n "$EFS_MOUNT_ADDR" ] && echo "Using EFS mount target IP: $EFS_MOUNT_ADDR"
 
     if install_efs_utils_from_bundle; then
         echo "amazon-efs-utils installed from bundled artifacts"
@@ -75,7 +79,11 @@ else
             TMP_EFS_DIR=$(mktemp -d)
             echo "Cloning efs-utils repository to $TMP_EFS_DIR..."
 
-            if ! git clone --depth 1 https://github.com/aws/efs-utils "$TMP_EFS_DIR" 2>&1; then
+            # Pin to v1.36.0: efs-utils v2.x requires cargo >= 1.78 (Cargo.lock v4),
+            # which Ubuntu LTS repos do not ship, so master fails to build. v1.x is
+            # Python + stunnel (stunnel4 is already installed in base.sh.j2) and
+            # supports the tls,iam mount options we use.
+            if ! git clone --depth 1 --branch v1.36.0 https://github.com/aws/efs-utils "$TMP_EFS_DIR" 2>&1; then
                 echo "ERROR: Failed to clone efs-utils repository"
                 rm -rf "$TMP_EFS_DIR"
                 exit 1
@@ -139,7 +147,8 @@ else
     mkdir -p /mnt/efs
 
     # Mount EFS with TLS encryption, IAM auth, and pinned mount target IP (bypasses DescribeMountTargets)
-    MOUNT_OPTS="tls,iam,addr=${EFS_MOUNT_ADDR}"
+    MOUNT_OPTS="tls,iam"
+    [ -n "$EFS_MOUNT_ADDR" ] && MOUNT_OPTS="${MOUNT_OPTS},addr=${EFS_MOUNT_ADDR}"
     MOUNT_LOG="/var/log/amazon/efs/mount.log"
     mkdir -p "$(dirname "$MOUNT_LOG")"
 
@@ -165,7 +174,7 @@ else
 
     # Add to fstab for persistence
     if ! grep -q "{{ efs_id }}" /etc/fstab; then
-        echo "{{ efs_id }}:/ /mnt/efs efs _netdev,tls,iam,addr=${EFS_MOUNT_ADDR} 0 0" >> /etc/fstab
+        echo "{{ efs_id }}:/ /mnt/efs efs _netdev,${MOUNT_OPTS} 0 0" >> /etc/fstab
     fi
 
     # Create service data directories (application data only - Docker stays on local EBS)

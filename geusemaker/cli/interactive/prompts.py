@@ -9,7 +9,16 @@ from geusemaker.cli.branding import EMOJI
 from geusemaker.cli.components import DialogAbort, DialogBack, Dialogs, messages
 
 STACK_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]*$")
-DEFAULT_REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"]
+# Region code format: e.g. us-east-1, eu-central-1, ap-southeast-2, us-gov-west-1
+REGION_PATTERN = re.compile(r"^[a-z]+(-[a-z]+)+-\d$")
+REGION_CHOICES = [
+    ("us-east-1", "US East (N. Virginia)"),
+    ("us-west-2", "US West (Oregon)"),
+    ("eu-west-1", "Europe (Ireland)"),
+    ("eu-central-1", "Europe (Frankfurt)"),
+    ("ap-southeast-1", "Asia Pacific (Singapore)"),
+]
+DEFAULT_REGIONS = [code for code, _ in REGION_CHOICES]
 INSTANCE_CHOICES = [
     ("t3.medium", "Balanced CPU baseline (default)"),
     ("t3.large", "More memory for heavier workflows"),
@@ -39,29 +48,54 @@ class InteractivePrompts:
             allow_back=False,
         )
 
+    def setup_mode(self, default: str | None = None) -> str:
+        modes = ["quick", "advanced"]
+        choice = self.dialogs.select(
+            "Choose setup mode",
+            options=[
+                "Quick setup — recommended defaults and isolated resources",
+                "Advanced setup — customize AMI, networking, storage, and SSH access",
+            ],
+            default_index=modes.index(default) if default in modes else 0,
+            help_text="Quick setup minimizes decisions. Advanced setup can reuse account resources.",
+        )
+        return modes[choice]
+
     def stack_name(self, default: str | None = None) -> str:
         return self.dialogs.prompt_text(
             "Stack name:",
             default=default,
             validator=lambda value: bool(STACK_NAME_PATTERN.match(value)),
             help_text="Letters, numbers, and dashes only (used for tagging).",
+            invalid_message="Stack names must start with a letter and contain only letters, numbers, and hyphens.",
         )
 
     def region(self, default: str | None = None) -> str:
+        other_label = "Other – enter any AWS region code"
+        options = [f"{code} – {label}" for code, label in REGION_CHOICES] + [other_label]
         default_index = DEFAULT_REGIONS.index(default) if default in DEFAULT_REGIONS else 0
         choice = self.dialogs.select(
             "Choose AWS region",
-            options=[f"{r} – close to US/EU users" if r.startswith("us") else r for r in DEFAULT_REGIONS],
+            options=options,
             default_index=default_index,
-            help_text="Pick the closest region to your users for lower latency.",
+            help_text="Pick the region closest to your users for latency; consider data-residency "
+            "requirements. Choose 'Other' for any region not listed.",
         )
-        return DEFAULT_REGIONS[choice]
+        if choice < len(DEFAULT_REGIONS):
+            return DEFAULT_REGIONS[choice]
+        return self.dialogs.prompt_text(
+            "AWS region code:",
+            default=default,
+            validator=lambda value: bool(REGION_PATTERN.match(value)),
+            help_text="e.g. ap-northeast-1, eu-west-2, sa-east-1.",
+            invalid_message="Enter a valid AWS region code such as us-east-2 or ap-northeast-1.",
+        )
 
     def tier(self, default: str | None = None) -> str:
         tiers = [
-            "dev – single instance (NGINX self-signed HTTPS optional)",
-            "automation – ALB (Tier 2)",
-            "gpu – ALB + CloudFront (Tier 3)",
+            "dev – Tier 1: single-instance development topology",
+            "automation – Tier 2: production topology with ALB + ACM HTTPS",
+            "gpu – Tier 3: global topology with ALB + CloudFront CDN",
         ]
         tier_keys = ["dev", "automation", "gpu"]
         default_idx = tier_keys.index(default) if default in tier_keys else 0
@@ -69,7 +103,8 @@ class InteractivePrompts:
             "Select deployment tier",
             options=tiers,
             default_index=default_idx,
-            help_text="Tier 2/3 support HTTPS via ACM certificates (requires a real domain).",
+            help_text="Tier controls topology; workload and instance policy are selected separately. "
+            "Tier 2/3 HTTPS requires a Route 53 domain.",
         )
         return tier_keys[choice]
 
@@ -88,6 +123,24 @@ class InteractivePrompts:
             help_text="CPU is suitable for most automation workflows. GPU is recommended for running AI models.",
         )
         return compute_choices[choice][0]
+
+    def instance_preference(self, default: str | None = None) -> str:
+        """Choose how eligible instance candidates should be ranked."""
+        choices = [
+            ("balanced", "Balance purchase mode, price, and capacity signal"),
+            ("lowest_cost", "Prefer the lowest evaluated hourly price"),
+            ("highest_availability", "Prefer the strongest placement/capacity signal"),
+            ("performance", "Prefer higher-capacity candidates"),
+        ]
+        labels = [f"{key.replace('_', ' ').title()} — {description}" for key, description in choices]
+        default_idx = next((i for i, (key, _) in enumerate(choices) if key == default), 0)
+        choice = self.dialogs.select(
+            "Choose instance recommendation policy",
+            options=labels,
+            default_index=default_idx,
+            help_text="GeuseMaker evaluates all eligible candidates and shows ranked alternatives.",
+        )
+        return choices[choice][0]
 
     def use_spot(self, default: bool = True) -> bool:
         return self.dialogs.confirm(
@@ -113,6 +166,13 @@ class InteractivePrompts:
             help_text="CPU instances work for most workflows. GPU instances recommended for AI model inference.",
         )
         return INSTANCE_CHOICES[choice][0]
+
+    def accept_recommendation(self, instance_type: str, reason: str | None = None) -> bool:
+        return self.dialogs.confirm(
+            f"Use recommended instance {instance_type}?",
+            default=True,
+            help_text=reason or "Choose no to select an instance type manually.",
+        )
 
     def os_type(self, default: str | None = None) -> str:
         os_choices = [
@@ -208,14 +268,27 @@ class InteractivePrompts:
         options: Iterable[str],
         default_index: int = 0,
         allow_create_new: bool = True,
+        default_create_new: bool = False,
     ) -> int:
+        """Select from ``options``, optionally offering "Create new" as entry 0.
+
+        ``default_index`` is relative to the caller-supplied ``options`` — it is
+        shifted internally when "Create new" is inserted, so callers never have to
+        account for the extra entry. Pass ``default_create_new=True`` to make
+        creation the highlighted default explicitly.
+
+        Returns the displayed index: 0 means "Create new" when ``allow_create_new``
+        is set; otherwise/above, ``result - 1`` (or ``result``) indexes ``options``.
+        """
         opt_list = list(options)
+        display_default = default_index
         if allow_create_new:
             opt_list.insert(0, "Create new")
+            display_default = 0 if default_create_new else default_index + 1
         choice = self.dialogs.select(
             label,
             options=opt_list,
-            default_index=default_index,
+            default_index=display_default,
             help_text="Type the number to select, 'back' to revisit, 'quit' to exit.",
         )
         return choice

@@ -37,8 +37,13 @@ class Dialogs:
         allow_quit: bool = True,
         validator: Callable[[str], bool] | None = None,
         help_text: str | None = None,
+        invalid_message: str | None = None,
     ) -> str:
-        """Prompt for free-form text with validation."""
+        """Prompt for free-form text with validation.
+
+        ``invalid_message`` explains WHY input was rejected (e.g. the naming rules);
+        without it users only see a generic failure.
+        """
         while True:
             self._print_help(help_text)
             raw = self._read(f"{prompt} " + (f"[{default}] " if default else ""))
@@ -47,7 +52,7 @@ class Dialogs:
                 value = default
             self._handle_navigation(value, allow_back, allow_quit)
             if validator and value and not validator(value):
-                console.print(f"{EMOJI['warn']} Please enter a valid value.")
+                console.print(f"{EMOJI['warn']} {invalid_message or 'Please enter a valid value.'}")
                 continue
             if value:
                 return value

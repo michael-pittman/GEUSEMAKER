@@ -11,7 +11,9 @@ from geusemaker.cli.output.formatters import (
 from geusemaker.cli.output.verbosity import (
     VerbosityLevel,
     get_verbosity,
+    is_machine_output,
     is_silent,
+    set_machine_output,
     set_verbosity,
 )
 
@@ -26,4 +28,6 @@ __all__ = [
     "set_verbosity",
     "get_verbosity",
     "is_silent",
+    "set_machine_output",
+    "is_machine_output",
 ]

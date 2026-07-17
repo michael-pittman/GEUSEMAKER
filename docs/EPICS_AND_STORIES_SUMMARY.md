@@ -1,5 +1,9 @@
 # GeuseMaker Epics and Stories Summary
 
+> **Delivery record.** Status counts reflect the story documents and may lag code that
+> was implemented outside the original epic sequence. Current behavior is documented in
+> [the documentation index](README.md), CLI help, and the canonical architecture.
+
 **Generated:** 2025-11-21
 **Last Updated:** 2025-12-21
 **Codebase Review Date:** 2025-12-08

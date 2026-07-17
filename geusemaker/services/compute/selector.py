@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.models.compute import InstanceSelection
 from geusemaker.models.deployment import DeploymentConfig
 from geusemaker.services.compute.spot import SpotSelectionService
 
@@ -27,6 +28,20 @@ class InstanceTypeSelection:
     reason: str
     placement_score: float
     fallback_occurred: bool
+    alternatives: tuple[InstanceTypeAlternative, ...] = ()
+
+
+@dataclass(frozen=True)
+class InstanceTypeAlternative:
+    """A ranked, eligible alternative shown alongside the recommendation."""
+
+    instance_type: str
+    is_spot: bool
+    price_per_hour: Decimal
+    placement_score: float
+
+
+InstancePreference = Literal["balanced", "lowest_cost", "highest_availability", "performance"]
 
 
 class InstanceTypeSelector:
@@ -73,6 +88,7 @@ class InstanceTypeSelector:
         compute_type: Literal["cpu", "gpu"],
         use_spot: bool = True,
         region: str | None = None,
+        preference: InstancePreference = "balanced",
     ) -> InstanceTypeSelection:
         """Select the best available instance type based on requirements.
 
@@ -93,8 +109,8 @@ class InstanceTypeSelector:
             verbosity="info",
         )
 
-        # Try each instance type in order of preference
-        for instance_type in instance_types:
+        candidates: list[tuple[int, InstanceSelection, float]] = []
+        for rank, instance_type in enumerate(instance_types):
             console.print(
                 f"{EMOJI['info']} Checking {instance_type}...",
                 verbosity="debug",
@@ -111,74 +127,64 @@ class InstanceTypeSelector:
 
             selection = self._spot_service.select_instance_type(config)
 
-            # If spot is requested and we got spot, or if on-demand is requested and we got it
-            if (use_spot and selection.is_spot) or (not use_spot and not selection.is_spot):
-                # Success! This instance type is available
-                placement_score = 0.0
-                if selection.is_spot and selection.availability_zone:
-                    # Get placement score from analysis
-                    analysis = self._spot_service.analyze_spot_prices(instance_type, region)
-                    placement_score = analysis.placement_scores_by_az.get(selection.availability_zone, 0.0)
+            placement_score = 0.0
+            if selection.is_spot and selection.availability_zone:
+                analysis = self._spot_service.analyze_spot_prices(instance_type, region)
+                placement_score = analysis.placement_scores_by_az.get(selection.availability_zone, 0.0)
+            candidates.append((rank, selection, placement_score))
 
-                reason = self._build_selection_reason(
-                    instance_type=instance_type,
-                    compute_type=compute_type,
-                    is_spot=selection.is_spot,
-                    use_spot_preference=use_spot,
-                    placement_score=placement_score,
-                    tried_count=instance_types.index(instance_type) + 1,
-                )
+        if not candidates:  # defensive: the spot service normally returns on-demand fallback
+            raise RuntimeError(f"No eligible {compute_type.upper()} instance candidates")
 
-                console.print(
-                    f"{EMOJI['check']} Selected {instance_type} ({reason})",
-                    verbosity="info",
-                )
-
-                return InstanceTypeSelection(
-                    instance_type=instance_type,
-                    availability_zone=selection.availability_zone,
-                    is_spot=selection.is_spot,
-                    price_per_hour=selection.price_per_hour,
-                    reason=reason,
-                    placement_score=placement_score,
-                    fallback_occurred=False,
-                )
-
-            # This instance type isn't available in the preferred mode, try next
-            console.print(
-                f"{EMOJI['warning']} {instance_type} not available with preferred settings, trying alternatives...",
-                verbosity="debug",
+        candidates.sort(key=lambda item: self._ranking_key(item, preference, use_spot))
+        _, selection, placement_score = candidates[0]
+        fallback = use_spot and not selection.is_spot
+        reason = self._build_selection_reason(
+            instance_type=selection.instance_type,
+            compute_type=compute_type,
+            is_spot=selection.is_spot,
+            use_spot_preference=use_spot,
+            placement_score=placement_score,
+            tried_count=len(candidates),
+            preference=preference,
+        )
+        alternatives = tuple(
+            InstanceTypeAlternative(
+                instance_type=item.instance_type,
+                is_spot=item.is_spot,
+                price_per_hour=item.price_per_hour,
+                placement_score=score,
             )
-
-        # If we reach here, spot was not selected for any candidate (price too high,
-        # volatility, or no capacity). Fall back to the first instance type on-demand.
-        fallback_instance = instance_types[0]
-        console.print(
-            f"{EMOJI['warning']} Spot not selected for any {compute_type.upper()} candidate "
-            f"(price, volatility, or capacity); falling back to on-demand {fallback_instance}",
-            verbosity="info",
+            for _, item, score in candidates[1:4]
         )
-
-        config = DeploymentConfig(
-            stack_name="temp-selector",
-            tier="dev",
-            region=region,
-            instance_type=fallback_instance,
-            use_spot=False,  # Force on-demand for fallback
-        )
-
-        selection = self._spot_service.select_instance_type(config)
-        reason = f"fallback to on-demand (spot unavailable for all {compute_type.upper()} instances)"
+        console.print(f"{EMOJI['check']} Selected {selection.instance_type} ({reason})", verbosity="info")
 
         return InstanceTypeSelection(
-            instance_type=fallback_instance,
+            instance_type=selection.instance_type,
             availability_zone=selection.availability_zone,
-            is_spot=False,
+            is_spot=selection.is_spot,
             price_per_hour=selection.price_per_hour,
             reason=reason,
-            placement_score=0.0,
-            fallback_occurred=True,
+            placement_score=placement_score,
+            fallback_occurred=fallback,
+            alternatives=alternatives,
         )
+
+    @staticmethod
+    def _ranking_key(
+        candidate: tuple[int, InstanceSelection, float], preference: InstancePreference, use_spot: bool
+    ) -> tuple[object, ...]:
+        rank, selection, placement = candidate
+        mode_penalty = int(selection.is_spot != use_spot)
+        if preference == "lowest_cost":
+            return (selection.price_per_hour, mode_penalty, -placement)
+        if preference == "highest_availability":
+            return (mode_penalty, -placement, selection.price_per_hour)
+        if preference == "performance":
+            return (-rank, mode_penalty, selection.price_per_hour)
+        # Balanced: honor purchase mode, then combine price and capacity signal.
+        adjusted_cost = selection.price_per_hour / Decimal(str(1 + max(placement, 0) / 10))
+        return (mode_penalty, adjusted_cost, rank)
 
     def _build_selection_reason(
         self,
@@ -188,15 +194,13 @@ class InstanceTypeSelector:
         use_spot_preference: bool,
         placement_score: float,
         tried_count: int,
+        preference: InstancePreference = "balanced",
     ) -> str:
         """Build a human-readable reason for the selection."""
         parts = []
 
         # Instance type position
-        if tried_count == 1:
-            parts.append("best available")
-        else:
-            parts.append(f"tried {tried_count} options")
+        parts.append(f"{preference.replace('_', ' ')} policy across {tried_count} options")
 
         # Compute type
         parts.append(compute_type.upper())
@@ -215,4 +219,9 @@ class InstanceTypeSelector:
         return ", ".join(parts)
 
 
-__all__ = ["InstanceTypeSelector", "InstanceTypeSelection"]
+__all__ = [
+    "InstancePreference",
+    "InstanceTypeAlternative",
+    "InstanceTypeSelector",
+    "InstanceTypeSelection",
+]

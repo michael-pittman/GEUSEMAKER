@@ -8,6 +8,19 @@ from typing import Any
 from geusemaker.models import SubnetResource, VPCResource
 
 
+class StubClientFactory:
+    """Client factory stand-in that never touches boto3/botocore.
+
+    Service constructors eagerly create boto3 clients; in environments without
+    working AWS credentials that raises at orchestrator construction time.
+    Returning a plain object keeps construction offline; tests then replace
+    every service with stubs before calling deploy().
+    """
+
+    def get_client(self, service: str, region: str = "us-east-1") -> object:  # noqa: ARG002
+        return object()
+
+
 @dataclass
 class StubStateManager:
     """Minimal async state manager used across orchestration tests."""
@@ -23,8 +36,11 @@ class StubStateManager:
             return self.saved_state
         return None
 
-    async def archive_deployment(self, stack_name: str) -> None:  # noqa: ARG002
-        """Archive deployment (stub no-op)."""
+    async def archive_deployment(self, state) -> None:  # type: ignore[no-untyped-def]
+        """Archive deployment (stub mirrors the real signature: takes a DeploymentState)."""
+        # Matching the real API matters: a stub accepting a plain string masked a
+        # live rollback crash ('str' object has no attribute 'updated_at').
+        _ = state.updated_at
         return None
 
 
@@ -256,6 +272,16 @@ class StubSSMService:
         self.waited_for_userdata = True
         return self.userdata_status
 
+    def run_shell_script(
+        self,
+        instance_id: str,  # noqa: ARG002
+        commands: list[str],
+        comment: str = "",  # noqa: ARG002
+        timeout_seconds: int = 180,  # noqa: ARG002
+    ) -> dict:
+        self.last_shell_commands = commands
+        return {"Status": "Success"}
+
 
 class StubALBService:
     """Stub ALB service capturing creation and health checks."""
@@ -388,6 +414,7 @@ class StubUserDataGenerator:
 
 __all__ = [
     "StubALBService",
+    "StubClientFactory",
     "StubCloudFrontService",
     "StubEC2Service",
     "StubEFSService",

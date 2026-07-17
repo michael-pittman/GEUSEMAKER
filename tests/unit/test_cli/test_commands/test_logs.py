@@ -62,16 +62,63 @@ def test_logs_deployment_not_found(tmp_path: Path) -> None:
 
 
 @mock_aws
-def test_logs_follow_only_for_userdata(tmp_path: Path) -> None:
-    """Test that --follow flag only works with userdata service."""
+def test_logs_follow_container_service_streams(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that --follow with a container service streams via follow_container_logs."""
     _make_state("demo", tmp_path)
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_follow_container_logs(self, instance_id: str, service: str, **kwargs):  # noqa: ARG001
+        calls.append((instance_id, service))
+        yield "n8n live line 1"
+        yield "n8n live line 2"
+
+    from geusemaker.services import ssm
+
+    monkeypatch.setattr(ssm.SSMService, "follow_container_logs", fake_follow_container_logs)
+
     runner = CliRunner()
     result = runner.invoke(
         cli,
         ["logs", "demo", "--service", "n8n", "--follow", "--state-dir", str(tmp_path)],
     )
-    assert result.exit_code == 1
-    assert "only supported for userdata" in result.output.lower()
+    assert result.exit_code == 0
+    assert "only supported for userdata" not in result.output.lower()
+    assert "n8n live line 1" in result.output
+    assert "n8n live line 2" in result.output
+    assert calls == [("i-123456", "n8n")]
+
+
+@mock_aws
+def test_logs_follow_without_service_streams_userdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that --follow without --service keeps the userdata streaming path."""
+    _make_state("demo", tmp_path)
+
+    userdata_calls: list[str] = []
+    container_calls: list[str] = []
+
+    def fake_stream_userdata_logs(self, instance_id: str, **kwargs):  # noqa: ARG001
+        userdata_calls.append(instance_id)
+        yield "userdata boot line"
+
+    def fake_follow_container_logs(self, instance_id: str, service: str, **kwargs):  # noqa: ARG001
+        container_calls.append(service)
+        yield "unexpected container line"
+
+    from geusemaker.services import ssm
+
+    monkeypatch.setattr(ssm.SSMService, "stream_userdata_logs", fake_stream_userdata_logs)
+    monkeypatch.setattr(ssm.SSMService, "follow_container_logs", fake_follow_container_logs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["logs", "demo", "--follow", "--state-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0
+    assert "userdata boot line" in result.output
+    assert userdata_calls == ["i-123456"]
+    assert container_calls == []
 
 
 @mock_aws

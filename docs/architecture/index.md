@@ -1,5 +1,12 @@
 # GeuseMaker Architecture Document
 
+**Status:** Current canonical architecture
+
+**Last implementation-alignment review:** 2026-07-16
+
+For repository navigation, start with [Source Tree](./9-source-tree.md). For the
+optional terminal interface, see the [TUI rollout](../tui-brutalist-rollout.md).
+
 ## Table of Contents
 
 - [GeuseMaker Architecture Document](#table-of-contents)

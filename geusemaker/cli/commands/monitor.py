@@ -74,6 +74,7 @@ def monitor_group() -> None:
 
 @monitor_group.command("start")
 @click.argument("stack_name")
+@click.option("--tui", is_flag=True, help="Open the optional full-screen monitor workspace.")
 @click.option("--host", help="Override host/IP of deployment.")
 @click.option("--interval", default=60, show_default=True, help="Check interval in seconds (min 10s).")
 @click.option("--checks", default=0, show_default=True, help="Number of iterations (0=infinite).")
@@ -103,6 +104,7 @@ def monitor_group() -> None:
 )
 def start_monitor(
     stack_name: str,
+    tui: bool,
     host: str | None,
     interval: int,
     checks: int,
@@ -113,6 +115,13 @@ def start_monitor(
     include_postgres: bool,
 ) -> None:
     """Start monitoring a deployment."""
+    if tui or os.environ.get("GEUSEMAKER_UI", "").lower() == "tui":
+        if background:
+            raise click.UsageError("--tui cannot be combined with --background.")
+        from geusemaker.cli.commands.tui import launch_tui
+
+        launch_tui(initial_screen="monitor", stack_name=stack_name)
+        return
     iterations = None if checks == 0 else checks
     interval = max(interval, 10)
     log_dir_path = Path(log_dir) if log_dir else DEFAULT_LOG_DIR

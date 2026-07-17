@@ -16,6 +16,7 @@ from geusemaker.cli.output import (
     output_option,
 )
 from geusemaker.infra import AWSClientFactory, StateManager
+from geusemaker.services.instance_resolver import InstanceResolver
 from geusemaker.services.ssm import SSMService
 
 
@@ -39,7 +40,7 @@ from geusemaker.services.ssm import SSMService
     "-f",
     is_flag=True,
     default=False,
-    help="Stream logs in real-time (userdata only).",
+    help="Stream logs in real-time (userdata or container services).",
 )
 @click.option(
     "--state-dir",
@@ -80,34 +81,22 @@ def logs(
             emit_result(payload, output_format)
         raise SystemExit(1)
 
-    # Validate --follow only works with userdata
-    if follow and service != "userdata":
-        payload = build_response(
-            status="error",
-            message="--follow flag only supported for userdata logs",
-            error_code="invalid_option",
-        )
-        if output_format == OutputFormat.TEXT:
-            console.print(
-                f"{EMOJI['error']} --follow flag only supported for userdata logs.",
-                verbosity="error",
-            )
-        else:
-            emit_result(payload, output_format)
-        raise SystemExit(1)
-
     # Initialize SSM service
     client_factory = AWSClientFactory()
     ssm_service = SSMService(client_factory, region=state.config.region)
 
     # Fetch logs based on service type
     try:
-        if follow:
-            _stream_userdata_logs(ssm_service, state.instance_id)
+        instance_id = InstanceResolver(client_factory, region=state.config.region).resolve(state).instance_id
+        state_manager.save_deployment_sync(state)
+        if follow and service == "userdata":
+            _stream_userdata_logs(ssm_service, instance_id)
+        elif follow:
+            _stream_container_logs(ssm_service, instance_id, service)
         elif service == "userdata":
-            _fetch_userdata_logs(ssm_service, state.instance_id, stack_name, output_format)
+            _fetch_userdata_logs(ssm_service, instance_id, stack_name, output_format)
         else:
-            _fetch_container_logs(ssm_service, state.instance_id, service, tail, stack_name, output_format)
+            _fetch_container_logs(ssm_service, instance_id, service, tail, stack_name, output_format)
     except RuntimeError as exc:
         payload = build_response(
             status="error",
@@ -131,6 +120,20 @@ def _stream_userdata_logs(ssm_service: SSMService, instance_id: str) -> None:
         for line in ssm_service.stream_userdata_logs(instance_id):
             console.print(line, verbosity="info")
         console.print(f"{EMOJI['check']} UserData initialization complete.", verbosity="info")
+    except KeyboardInterrupt:
+        console.print(f"{EMOJI['warning']} Log streaming interrupted.", verbosity="warning")
+
+
+def _stream_container_logs(ssm_service: SSMService, instance_id: str, service: str) -> None:
+    """Stream Docker container logs in real-time."""
+    console.print(
+        f"{EMOJI['info']} Streaming {service} container logs (Ctrl+C to stop)...",
+        verbosity="info",
+    )
+    try:
+        for line in ssm_service.follow_container_logs(instance_id, service):
+            console.print(line, verbosity="info")
+        console.print(f"{EMOJI['check']} Log streaming finished.", verbosity="info")
     except KeyboardInterrupt:
         console.print(f"{EMOJI['warning']} Log streaming interrupted.", verbosity="warning")
 
@@ -172,18 +175,11 @@ def _fetch_container_logs(
     output_format: OutputFormat,
 ) -> None:
     """Fetch Docker container logs for a specific service."""
-    # Map service names to container names
-    container_map = {
-        "n8n": "n8n",
-        "ollama": "ollama",
-        "qdrant": "qdrant",
-        "crawl4ai": "crawl4ai",
-        "postgres": "postgres",
-    }
-
-    container_name = container_map.get(service)
-    if not container_name:
-        raise RuntimeError(f"Unknown service: {service}")
+    # Map service names to container names (shared source of truth on SSMService)
+    try:
+        container_name = SSMService.resolve_container_name(service)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
 
     # Run docker logs command via SSM
     result = ssm_service.run_shell_script(

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import EMOJI
+from geusemaker.cli.progress_events import ProgressCallback
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig, DeploymentState
 from geusemaker.orchestration.errors import OrchestrationError
@@ -25,6 +26,7 @@ class Tier3Orchestrator(Tier2Orchestrator):
         state_manager: StateManager | None = None,
         pricing_service=None,
         spot_selector=None,
+        on_progress: ProgressCallback | None = None,
     ):
         super().__init__(
             client_factory,
@@ -32,6 +34,7 @@ class Tier3Orchestrator(Tier2Orchestrator):
             state_manager,
             pricing_service=pricing_service,
             spot_selector=spot_selector,
+            on_progress=on_progress,
         )
         self.cloudfront_service = CloudFrontService(self.client_factory, region=region)
 
@@ -80,10 +83,16 @@ class Tier3Orchestrator(Tier2Orchestrator):
             raise OrchestrationError("Tier 2 deployment did not create ALB. Cannot proceed with CloudFront creation.")
 
         # Step 11: Create CloudFront distribution with ALB as origin
+        self._emit_progress("cdn", "Creating CloudFront distribution")
         console.print(f"\n{EMOJI['rocket']} Creating CloudFront distribution...", verbosity="info")
         cloudfront_info = self._create_cloudfront(config, tier2_state)
 
         # Step 12: Wait for CloudFront to deploy (15-30 minutes typical)
+        self._emit_progress(
+            "cdn",
+            "Waiting for CloudFront deployment",
+            resource_id=cloudfront_info["distribution_id"],
+        )
         console.print(
             f"{EMOJI['info']} Waiting for CloudFront deployment (this can take 15-30 minutes)...",
             verbosity="info",
@@ -264,12 +273,21 @@ class Tier3Orchestrator(Tier2Orchestrator):
             security_group_id=tier2_state.security_group_id,
             efs_id=tier2_state.efs_id,
             efs_mount_target_id=tier2_state.efs_mount_target_id,
+            efs_mount_target_ids=tier2_state.efs_mount_target_ids,
             efs_mount_target_ip=tier2_state.efs_mount_target_ip,
             iam_role_name=tier2_state.iam_role_name,
             iam_role_arn=tier2_state.iam_role_arn,
             iam_instance_profile_name=tier2_state.iam_instance_profile_name,
             iam_instance_profile_arn=tier2_state.iam_instance_profile_arn,
             instance_id=tier2_state.instance_id,
+            launch_template_id=tier2_state.launch_template_id,
+            auto_scaling_group_name=tier2_state.auto_scaling_group_name,
+            spot_event_log_group=tier2_state.spot_event_log_group,
+            spot_event_rule_names=tier2_state.spot_event_rule_names,
+            spot_lease_table_name=tier2_state.spot_lease_table_name,
+            spot_lifecycle_hook_names=tier2_state.spot_lifecycle_hook_names,
+            spot_coordinator_function_name=tier2_state.spot_coordinator_function_name,
+            spot_coordinator_role_name=tier2_state.spot_coordinator_role_name,
             keypair_name=tier2_state.keypair_name,
             public_ip=tier2_state.public_ip,
             private_ip=tier2_state.private_ip,

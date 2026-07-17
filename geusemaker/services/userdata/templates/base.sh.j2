@@ -40,6 +40,18 @@ handle_error() {
 
 trap 'handle_error ${LINENO:-unknown}' ERR
 
+# Explicit `exit 1` in included templates bypasses the ERR trap, so also hook
+# EXIT: any nonzero exit without a completion guard must leave the error guard,
+# or the orchestrator cannot tell a failed init from a successful one.
+handle_exit() {
+    local status=$?
+    if [ "$status" -ne 0 ] && [ ! -f "$GUARD_FILE" ] && [ ! -f "$ERROR_GUARD" ]; then
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ): exited with status $status" > "$ERROR_GUARD"
+    fi
+}
+
+trap handle_exit EXIT
+
 echo "Starting GeuseMaker initialization..."
 
 # Runtime bundle setup (optional)
@@ -90,6 +102,28 @@ echo "Detected OS family: $OS_FAMILY"
 # Debian/Ubuntu: set noninteractive frontend and add dpkg/apt lock retry helper
 if [ "$OS_FAMILY" = "debian" ]; then
     export DEBIAN_FRONTEND=noninteractive
+    # Background apt activity (apt-daily / apt-daily-upgrade timers running
+    # unattended-upgrade) can hold the dpkg lock for many minutes right after
+    # boot, starving every install in this script (observed live: efs-utils and
+    # NGINX installs failing after 5 minutes of lock retries). Stopping only the
+    # unattended-upgrades *service* is not enough — the lock holder is the
+    # timer-triggered apt-daily run. Stop the timers and services, then wait for
+    # the lock files to actually be released before any apt call. Everything is
+    # restarted at the end of nginx-setup (and on any reboot).
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+    systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades 2>/dev/null || true
+
+    echo "Waiting for dpkg/apt locks to be released..."
+    lock_wait=0
+    while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+        if [ "$lock_wait" -ge 600 ]; then
+            echo "WARNING: dpkg/apt locks still held after ${lock_wait}s; proceeding (per-call retries will handle residual contention)"
+            break
+        fi
+        sleep 5
+        lock_wait=$((lock_wait + 5))
+    done
+    echo "dpkg/apt locks free after ${lock_wait}s"
 fi
 
 with_dpkg_lock_retry() {
@@ -277,7 +311,9 @@ if [ "$OS_FAMILY" = "debian" ]; then
     elif apt-cache show libfuse2t64 >/dev/null 2>&1; then
         fuse_pkg="libfuse2t64"
     fi
-    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 fuse ${fuse_pkg:+$fuse_pkg}
+    # nginx is installed up-front (configured/started later in nginx-setup) so a
+    # late apt transaction can't be starved by background apt activity.
+    pkg_install curl ca-certificates util-linux coreutils nfs-common stunnel4 fuse nginx ${fuse_pkg:+$fuse_pkg}
 else
     # Amazon Linux: Replace curl-minimal with full curl (AL2023 ships with curl-minimal)
     # Use --allowerasing to allow yum to replace curl-minimal with curl

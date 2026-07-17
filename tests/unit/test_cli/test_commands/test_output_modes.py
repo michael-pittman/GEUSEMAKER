@@ -51,3 +51,32 @@ def test_silent_mode_shows_json_only(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["status"] == "ok"
     assert payload["data"][0]["stack_name"] == "demo"
+
+
+def test_silent_text_mode_suppresses_results(tmp_path: Path) -> None:
+    """--silent means errors only: even result-level text output is suppressed."""
+    _make_state("demo", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--silent", "list", "--state-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+
+
+def test_cleanup_json_requires_all_or_dry_run() -> None:
+    """Machine-readable cleanup must never fall through to interactive confirmation."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["cleanup", "--output", "json"])
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert payload["error_code"] == "confirmation_required"
+
+
+def test_json_output_goes_to_stdout_diagnostics_to_stderr(tmp_path: Path) -> None:
+    """In machine mode, stdout parses as one document even when diagnostics are emitted."""
+    _make_state("demo", tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list", "--state-dir", str(tmp_path), "--output", "json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"

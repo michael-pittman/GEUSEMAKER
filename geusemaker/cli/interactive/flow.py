@@ -14,6 +14,7 @@ from geusemaker.cli.components import (
     spinner,
     tables,
 )
+from geusemaker.cli.configuration import ConfigBuilder
 from geusemaker.cli.interactive.prompts import InteractivePrompts
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.models import DeploymentConfig
@@ -158,14 +159,16 @@ class InteractiveFlow:
         self._steps = [
             self._step_stack_name,
             self._step_region,
+            self._step_setup_mode,
             self._step_tier,
             self._step_https,
             self._step_compute_type,
+            self._step_instance_preference,
             self._step_spot,
             self._step_instance_type,
             self._step_ami,
-            self._step_discovery,
             self._step_cost_preview,
+            self._step_discovery,
             self._step_confirm,
         ]
 
@@ -242,6 +245,11 @@ class InteractiveFlow:
             return
         self.state["tier"] = self.prompts.tier(default=self.state.get("tier"))
 
+    def _step_setup_mode(self) -> None:
+        if self._resumed_session and not self._force_prompt and self.state.get("setup_mode"):
+            return
+        self.state["setup_mode"] = self.prompts.setup_mode(default=self.state.get("setup_mode"))
+
     def _step_https(self) -> None:
         """Configure HTTPS inputs needed for Tier 2/3 ALB deployments."""
         # Only prompt when tier implies ALB and user wants HTTPS.
@@ -274,7 +282,17 @@ class InteractiveFlow:
             self.state["alb_hosted_zone_id"] = None
             return
 
-        # Tier 2/3: require Route 53 hosted zone + domain so we can request/validate ACM during deploy.
+        # Defer account discovery until after the cost preview.
+        self.state["alb_domain_name"] = None
+        self.state["alb_hosted_zone_id"] = None
+        self.state["force_https_redirect"] = True
+
+    def _configure_alb_https(self) -> None:
+        """Collect ACM DNS inputs only after the deployment shape is accepted."""
+        if self.state.get("tier", "dev") == "dev" or not self.state.get("enable_https", True):
+            return
+        if self.state.get("alb_domain_name") and self.state.get("alb_hosted_zone_id"):
+            return
         with spinner("Discovering Route 53 hosted zones"):
             zones = self._discovery.list_hosted_zones()
 
@@ -305,16 +323,27 @@ class InteractiveFlow:
         ).rstrip(".")
         self.state["alb_domain_name"] = fqdn
 
-        # Always redirect to HTTPS at the ALB for Tier 2/3.
-        self.state["force_https_redirect"] = True
-
     def _step_compute_type(self) -> None:
-        if self._resumed_session and not self._force_prompt and self.state.get("compute_type"):
+        if self._resumed_session and not self._force_prompt and self.state.get("workload"):
             return
-        self.state["compute_type"] = self.prompts.compute_type(default=self.state.get("compute_type"))
+        legacy_default = self.state.get("workload") or self.state.get("compute_type")
+        self.state["workload"] = self.prompts.compute_type(default=legacy_default)
+
+    def _step_instance_preference(self) -> None:
+        if self._resumed_session and not self._force_prompt and self.state.get("instance_preference"):
+            return
+        if self.state.get("setup_mode") == "quick":
+            self.state["instance_preference"] = self.state.get("instance_preference", "balanced")
+            return
+        self.state["instance_preference"] = self.prompts.instance_preference(
+            default=self.state.get("instance_preference")
+        )
 
     def _step_spot(self) -> None:
         if self._resumed_session and not self._force_prompt and "use_spot" in self.state:
+            return
+        if self.state.get("setup_mode") == "quick":
+            self.state["use_spot"] = self.state.get("use_spot", True)
             return
         self.state["use_spot"] = self.prompts.use_spot(default=self.state.get("use_spot", True))
 
@@ -322,8 +351,8 @@ class InteractiveFlow:
         if self._resumed_session and not self._force_prompt and self.state.get("instance_type"):
             return
 
-        # Auto-select instance type based on compute_type if available
-        if self.state.get("compute_type"):
+        # Auto-select instance type based on independent workload intent.
+        if self.state.get("workload"):
             from geusemaker.services.compute import InstanceTypeSelector
 
             selector = InstanceTypeSelector(
@@ -333,14 +362,27 @@ class InteractiveFlow:
             )
 
             selection = selector.select_best_instance(
-                compute_type=self.state["compute_type"],
+                compute_type=self.state["workload"],
                 use_spot=self.state.get("use_spot", True),
                 region=self._discovery.region,
+                preference=self.state.get("instance_preference", "balanced"),
             )
 
             self.state["instance_type"] = selection.instance_type
             self.state["_instance_selection_reason"] = selection.reason
             self.state["_instance_selection_fallback"] = selection.fallback_occurred
+            self.state["_instance_alternatives"] = [
+                {
+                    "instance_type": alternative.instance_type,
+                    "is_spot": alternative.is_spot,
+                    "price_per_hour": str(alternative.price_per_hour),
+                    "placement_score": alternative.placement_score,
+                }
+                for alternative in selection.alternatives
+            ]
+            if not self.prompts.accept_recommendation(selection.instance_type, selection.reason):
+                self.state["instance_type"] = self.prompts.instance_type(default=selection.instance_type)
+                self.state["_instance_selection_reason"] = "Manually selected after reviewing the recommendation."
         else:
             # Fallback to manual selection if compute_type not set
             self.state["instance_type"] = self.prompts.instance_type(
@@ -350,6 +392,14 @@ class InteractiveFlow:
     def _step_ami(self) -> None:
         ami_keys = ["os_type", "architecture", "ami_type", "ami_id"]
         if self._resumed_session and not self._force_prompt and all(key in self.state for key in ami_keys):
+            return
+        if self.state.get("setup_mode") == "quick":
+            self.state.update(
+                os_type=self.state.get("os_type", "ubuntu-22.04"),
+                architecture=self.state.get("architecture", "x86_64"),
+                ami_type=self.state.get("ami_type", "base"),
+                ami_id=self.state.get("ami_id"),
+            )
             return
         self.state["os_type"] = self.prompts.os_type(default=self.state.get("os_type"))
         self.state["architecture"] = self.prompts.architecture(default=self.state.get("architecture"))
@@ -371,6 +421,22 @@ class InteractiveFlow:
         ]
         if self._resumed_session and not self._force_prompt and all(key in self.state for key in discovery_keys):
             return
+        self._configure_alb_https()
+        if self.state.get("setup_mode") == "quick":
+            self.state.update(
+                vpc_id=None,
+                subnet_id=None,
+                storage_subnet_id=None,
+                public_subnet_ids=None,
+                private_subnet_ids=None,
+                security_group_id=None,
+                efs_id=None,
+                create_mount_target=False,
+                attach_internet_gateway=False,
+                keypair_name=None,
+            )
+            messages.info("Quick setup will create isolated networking, storage, and access resources.")
+            return
         with spinner("Discovering AWS resources"):
             vpcs = self._discovery.list_vpcs()
         tables.resource_table(vpcs=vpcs)
@@ -383,8 +449,10 @@ class InteractiveFlow:
             tables.resource_recommendations_panel(recommendations)
         selected_vpc: VPCInfo | None = None
         if vpcs:
-            options = [f"{v.vpc_id} ({v.cidr_block})" for v in vpcs]
-            choice = self.prompts.choose_from_list("Choose a VPC", options, default_index=1 if len(options) > 1 else 0)
+            options = [f"{v.vpc_id} ({v.cidr_block}){' [default VPC]' if v.is_default else ''}" for v in vpcs]
+            # Recommend the account's default VPC when present, else the first VPC.
+            default_vpc_idx = next((i for i, v in enumerate(vpcs) if v.is_default), 0)
+            choice = self.prompts.choose_from_list("Choose a VPC", options, default_index=default_vpc_idx)
             if choice > 0:
                 selected_vpc = vpcs[choice - 1]
         else:
@@ -489,8 +557,8 @@ class InteractiveFlow:
             choice = self.prompts.choose_from_list(
                 "Choose SSH key pair",
                 options,
-                default_index=0,
                 allow_create_new=True,
+                default_create_new=True,
             )
             self.state["keypair_name"] = None if choice == 0 else options[choice - 1]
         else:
@@ -554,7 +622,7 @@ class InteractiveFlow:
             messages.warning("No security groups found; a new one will be created.")
             return None
         options = [f"{g.name} ({g.security_group_id})" for g in groups]
-        choice = self.prompts.choose_from_list("Select security group", options, default_index=0)
+        choice = self.prompts.choose_from_list("Select security group", options, default_create_new=True)
         return None if choice == 0 else groups[choice - 1]
 
     def _select_efs_filesystem(self, filesystems: list[EFSInfo]) -> EFSInfo | None:
@@ -567,36 +635,16 @@ class InteractiveFlow:
             messages.info("No available EFS filesystems found; a new one will be created.")
             return None
         options = [f"{fs.file_system_id} ({fs.name or 'unnamed'})" for fs in available_fs]
-        choice = self.prompts.choose_from_list("Select EFS filesystem", options, default_index=0)
+        choice = self.prompts.choose_from_list("Select EFS filesystem", options, default_create_new=True)
         return None if choice == 0 else available_fs[choice - 1]
 
     def _build_config(self) -> DeploymentConfig:
-        return DeploymentConfig(
-            stack_name=self.state.get("stack_name", "geusemaker"),
-            tier=self.state.get("tier", "dev"),
-            region=self.state.get("region", "us-east-1"),
-            instance_type=self.state.get("instance_type", "t3.medium"),
-            use_spot=self.state.get("use_spot", True),
-            os_type=self.state.get("os_type", "ubuntu-22.04").lower(),
-            architecture=self.state.get("architecture", "x86_64").lower(),
-            ami_type=self.state.get("ami_type", "base").lower(),
-            ami_id=self.state.get("ami_id"),
-            # Feature flags (Tier 2/3 enable ALB/CDN in DeploymentRunner normalization too)
-            enable_https=self.state.get("enable_https", True),
-            tier1_use_self_signed=self.state.get("tier1_use_self_signed", True),
-            force_https_redirect=self.state.get("force_https_redirect", True),
-            alb_domain_name=self.state.get("alb_domain_name"),
-            alb_hosted_zone_id=self.state.get("alb_hosted_zone_id"),
-            vpc_id=self.state.get("vpc_id"),
-            subnet_id=self.state.get("subnet_id"),
-            attach_internet_gateway=self.state.get("attach_internet_gateway", False),
-            public_subnet_ids=self.state.get("public_subnet_ids"),
-            private_subnet_ids=self.state.get("private_subnet_ids"),
-            storage_subnet_id=self.state.get("storage_subnet_id"),
-            security_group_id=self.state.get("security_group_id"),
-            efs_id=self.state.get("efs_id"),
-            keypair_name=self.state.get("keypair_name"),
-        )
+        # Delegate defaults + construction to the shared configuration seam so
+        # the wizard and the Textual deploy form cannot silently diverge. This
+        # also propagates fields deploy.py prefills into initial_state (e.g.
+        # budget_limit, enable_alb/enable_cdn, runtime bundle and rollback
+        # settings) that the previous hand-rolled construction dropped.
+        return ConfigBuilder.from_initial_state(self.state).apply_defaults().build()
 
     def _serializable_state(self) -> dict[str, Any]:
         state = self.state.copy()

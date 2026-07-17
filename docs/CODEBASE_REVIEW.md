@@ -1,5 +1,10 @@
 # GeuseMaker Codebase Heuristic Review
 
+> **Historical review (2025).** This document describes an earlier implementation
+> state. Several headline findings—including missing status/log commands and missing
+> Tier 2/3 orchestration—have since been resolved. Use [the documentation index](README.md),
+> current CLI help, and the test suite for present behavior.
+
 **Date**: 2025-01-27
 **Reviewer**: Claude Code (Automated Analysis)
 **Codebase Version**: Main branch (commit 4c67922)
@@ -470,9 +475,9 @@ PORT_POSTGRES = 5432
 - Emoji-enhanced status messages
 
 **Implementation**:
-- [cli/commands/deploy.py](geusemaker/cli/commands/deploy.py) - Main entry point
-- [services/selection/flow.py](geusemaker/services/selection/flow.py) - Interactive prompts
-- [cli/display/*.py](geusemaker/cli/display/) - Rich UI components
+- [cli/commands/deploy.py](../geusemaker/cli/commands/deploy.py) - Main entry point
+- [services/selection/flow.py](../geusemaker/services/selection/flow.py) - Interactive prompts
+- [cli/display/*.py](../geusemaker/cli/display/) - Rich UI components
 
 ### Non-Interactive Mode (✅ Excellent)
 

@@ -3,8 +3,8 @@
 A successful implementation must demonstrate:
 
 1. ✅ **Deployment**: Deploy all 4 AI services (n8n, Ollama, Qdrant, Crawl4AI) + PostgreSQL in functional state
-2. ✅ **Tiers**: Support minimum 3 deployment tiers (development, staging, production)
-3. ✅ **Interfaces**: Provide both interactive and non-interactive interfaces
+2. ✅ **Topologies**: Support development, production/ALB, and global/CloudFront topologies independently of CPU/GPU workload
+3. ✅ **Interfaces**: Provide quick and advanced wizards, optional TUI, and non-interactive interfaces
 4. ✅ **Discovery**: Discover and optionally reuse existing AWS resources (VPCs, subnets, etc.)
 5. ✅ **Validation**: Validate deployments and report health status for all services
 6. ✅ **State**: Track deployment state and enable listing, inspection, and cleanup

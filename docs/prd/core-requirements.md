@@ -51,39 +51,42 @@ The system must deploy and manage these services:
 
 ---
 
-## 2. Deployment Tiers
+## 2. Deployment Topologies and Workloads
 
-The system must support multiple deployment configurations:
+Topology and workload are separate decisions. The legacy tier keys remain stable for
+configuration compatibility, but they define network and edge shape rather than CPU/GPU eligibility.
 
-### Tier 1: Development (CPU-Based)
-- **Use Case**: Development, testing, experimentation without GPU requirements
+### Tier 1: Development (`dev`)
+- **Use Case**: Development, testing, and low-complexity deployments
 - **Requirements**:
-  - Single compute instance (CPU-only, no GPU)
-  - Cost-optimized instance selection (prefer lowest-cost available)
+  - Single compute instance
   - Direct public access via public IP
+  - Optional self-signed HTTPS through NGINX
   - Persistent data storage
   - Basic health monitoring
-  - Estimated cost: ~$0.01-0.05/hour with spot instances
 
-### Tier 2: Automation Engineer (Minimal Stack)
-- **Use Case**: Pre-production testing, demos, CI/CD pipelines
+### Tier 2: Production (`automation`)
+- **Use Case**: Production automation and applications requiring a managed ingress
 - **Requirements**:
-  - CPU-enabled compute instances with optimized AMI
-  - Optimized for workflow automation (n8n + PostgreSQL primary)
-  - Minimal services deployment (can exclude Ollama for CPU-only workflows)
-  - Estimated cost: ~$0.02-0.10/hour with spot instances
+  - Application Load Balancer
+  - ACM HTTPS certificate and redirect support
+  - Route 53 DNS validation when certificates are provisioned interactively
+  - CPU or GPU workload support
 
-### Tier 3: GPU-Optimized (AI Workloads)
-- **Use Case**: Production LLM inference workloads
+### Tier 3: Global (`gpu`, legacy key)
+- **Use Case**: Globally distributed applications requiring an edge CDN
 - **Requirements**:
-  - GPU-enabled compute instances (minimum g4dn.xlarge for 8B parameter models)
-  - NVIDIA runtime for Docker GPU support
-  - Optimized for LLM inference workloads (Ollama with GPU acceleration)
-  - Can be combined with features from other tiers
-  - Optional: Load balancer for high availability
-  - Optional: Content Delivery Network (CDN) for global access
-  - Comprehensive monitoring and alerting
-  - Estimated cost: ~$0.15-0.50/hour with spot instances (70% savings vs on-demand)
+  - Tier 2 ALB and HTTPS capabilities
+  - CloudFront distribution
+  - CPU or GPU workload support
+
+### Workload and recommendation policy
+
+- `workload=cpu` selects CPU candidates.
+- `workload=gpu` selects GPU candidates and compatible runtime behavior.
+- Older configurations that omit `workload` infer GPU only for the legacy `gpu` tier.
+- Recommendation policies are `balanced`, `lowest_cost`, `highest_availability`, and `performance`.
+- The selector evaluates eligible candidates and returns ranked alternatives before deployment.
 
 ---
 
@@ -92,12 +95,15 @@ The system must support multiple deployment configurations:
 ### 3.1 Interactive Mode
 - **Purpose**: Guided deployment for users learning the system
 - **Requirements**:
-  - Step-by-step prompts for all decisions
+  - Quick setup with derived defaults and advanced setup with full control
+  - Step-by-step prompts for decisions appropriate to the selected mode
   - Resource discovery and selection (VPCs, subnets, security groups, etc.)
   - Cost estimation before deployment
   - Clear explanation of each option
   - Visual feedback (progress indicators, success/error messages)
   - Ability to abort deployment at any step
+  - Back navigation and resumable local sessions
+  - Optional full-screen TUI installed through the `[tui]` extra
 
 ### 3.2 Non-Interactive Mode
 - **Purpose**: Automation and CI/CD integration
