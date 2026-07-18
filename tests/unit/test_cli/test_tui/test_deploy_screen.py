@@ -285,6 +285,51 @@ async def test_config_path_constructor_seeds_form(tmp_path: Path) -> None:
         assert app.screen.query_one("#field-tier", Select).value == "dev"
 
 
+ACTION_BUTTON_IDS = ("deploy-launch", "deploy-validate", "deploy-export", "deploy-import")
+
+
+@pytest.mark.asyncio
+async def test_all_action_buttons_visible_and_unclipped_on_wide_terminal() -> None:
+    """All four action buttons render fully inside the side panel with no clipping.
+
+    A single Horizontal row of four min-width buttons overflows the 56-col side
+    panel (the reported P2 bug); the 2x2 Grid keeps every button inside the
+    #deploy-actions region even on a wide terminal.
+    """
+    screen = DeployScreen(initial_state=dict(VALID_STATE))
+    app = HostApp(screen)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _settle(pilot)
+        assert not app.screen.query_one("#deploy-workspace").has_class("-narrow")
+        actions = app.screen.query_one("#deploy-actions")
+        buttons = [app.screen.query_one(f"#{bid}", Button) for bid in ACTION_BUTTON_IDS]
+        for button in buttons:
+            assert button.display, button.id
+            assert button.region.width > 0, button.id
+            # Every button region is fully contained by the actions container:
+            # no horizontal (or vertical) clipping.
+            assert actions.region.contains_region(button.region), button.id
+        # 2x2 layout: the four buttons occupy two distinct rows.
+        assert len({button.region.y for button in buttons}) == 2
+
+
+@pytest.mark.asyncio
+async def test_narrow_terminal_stacks_workspace_into_one_column() -> None:
+    """Below the breakpoint the workspace gains -narrow and switches to vertical."""
+    screen = DeployScreen(initial_state=dict(VALID_STATE))
+    app = HostApp(screen)
+    async with app.run_test(size=(60, 40)) as pilot:
+        await _settle(pilot)
+        workspace = app.screen.query_one("#deploy-workspace")
+        assert workspace.has_class("-narrow")
+        assert workspace.styles.layout is not None
+        assert workspace.styles.layout.name == "vertical"
+        # Widening past the breakpoint removes the class (deterministic toggle).
+        await pilot.resize_terminal(120, 40)
+        await _settle(pilot)
+        assert not workspace.has_class("-narrow")
+
+
 @pytest.mark.asyncio
 async def test_escape_dismisses_screen() -> None:
     screen = DeployScreen(initial_state=dict(VALID_STATE))

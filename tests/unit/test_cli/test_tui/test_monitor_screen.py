@@ -57,6 +57,20 @@ class FakeHealthChecker:
         return [result.model_copy(deep=True) for result in self._scripted[index]]
 
 
+class RaisingHealthChecker:
+    """Succeeds once, then every subsequent poll raises (simulates an outage)."""
+
+    def __init__(self, first: list[HealthCheckResult]) -> None:
+        self.calls = 0
+        self._first = first
+
+    async def __call__(self, host: str) -> list[HealthCheckResult]:
+        self.calls += 1
+        if self.calls == 1:
+            return [result.model_copy(deep=True) for result in self._first]
+        raise ConnectionError("connection refused")
+
+
 class BlockedHealthChecker:
     """Never completes a poll, so the screen stays in its WAIT state."""
 
@@ -83,6 +97,10 @@ def _result(name: str, *, healthy: bool, error: str | None = None) -> HealthChec
 
 def _all_healthy() -> list[HealthCheckResult]:
     return [_result(name, healthy=True) for name in SERVICES]
+
+
+def _all_unhealthy(reason: str = "refused") -> list[HealthCheckResult]:
+    return [_result(name, healthy=False, error=reason) for name in SERVICES]
 
 
 def _with_unhealthy(bad_service: str, reason: str) -> list[HealthCheckResult]:
@@ -128,7 +146,7 @@ def _write_state(
 
 def _screen(
     state_dir: Path,
-    checker: FakeHealthChecker | BlockedHealthChecker,
+    checker: FakeHealthChecker | BlockedHealthChecker | RaisingHealthChecker,
     stack_name: str = "demo",
 ) -> MonitorScreen:
     return MonitorScreen(
@@ -189,6 +207,7 @@ async def test_polls_populate_service_table(tmp_path: Path) -> None:
             assert str(row[0]) == name.upper()
             assert str(row[1]) == "OK"
         assert checker.hosts[0] == "1.2.3.4"
+        assert "[OK]" in _status_text(screen)
         assert "5/5 SERVICES HEALTHY" in _status_text(screen)
         assert "LAST POLL" in str(screen.query_one("#monitor-last-poll", Static).content)
 
@@ -209,7 +228,58 @@ async def test_unhealthy_service_renders_error_line(tmp_path: Path) -> None:
         assert "refused" in events
         # healthy -> unhealthy transition is logged as a state change
         assert "QDRANT WENT DOWN" in events
+        # Partial health degrades the headline badge but keeps the count text.
+        assert "[DEGRADED]" in _status_text(screen)
         assert "4/5 SERVICES HEALTHY" in _status_text(screen)
+
+
+@pytest.mark.asyncio
+async def test_all_healthy_headline_shows_ok(tmp_path: Path) -> None:
+    """Every service healthy → headline badge is [OK]."""
+    _write_state(tmp_path)
+    checker = FakeHealthChecker([_all_healthy()])
+    screen = _screen(tmp_path, checker)
+    app = MonitorTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: "SERVICES HEALTHY" in _status_text(screen))
+        assert "[OK]" in _status_text(screen)
+        assert "[DEGRADED]" not in _status_text(screen)
+        assert "[ERROR]" not in _status_text(screen)
+        assert "5/5 SERVICES HEALTHY" in _status_text(screen)
+
+
+@pytest.mark.asyncio
+async def test_zero_healthy_headline_shows_error(tmp_path: Path) -> None:
+    """No service healthy → headline badge is [ERROR], count text preserved."""
+    _write_state(tmp_path)
+    checker = FakeHealthChecker([_all_unhealthy()])
+    screen = _screen(tmp_path, checker)
+    app = MonitorTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: "SERVICES HEALTHY" in _status_text(screen))
+        assert "[ERROR]" in _status_text(screen)
+        assert "0/5 SERVICES HEALTHY" in _status_text(screen)
+
+
+@pytest.mark.asyncio
+async def test_failed_poll_marks_headline_stale_and_updates_timestamp(tmp_path: Path) -> None:
+    """A poll that raises flips the headline to [STALE], refreshes the LAST POLL
+    line (not stale), surfaces the retry hint, and logs the failure."""
+    _write_state(tmp_path)
+    checker = RaisingHealthChecker(_all_healthy())
+    screen = _screen(tmp_path, checker)
+    app = MonitorTestApp(screen)
+    async with app.run_test() as pilot:
+        # First poll succeeds (OK), then subsequent polls raise.
+        await _wait_for(pilot, lambda: "[STALE]" in _status_text(screen))
+        status = _status_text(screen)
+        assert "LAST POLL FAILED" in status
+        assert "NEXT RETRY" in status
+        last_poll = str(screen.query_one("#monitor-last-poll", Static).content)
+        assert "FAILED" in last_poll
+        events = _event_text(screen)
+        assert "POLL" in events and "FAILED" in events
+        assert "connection refused" in events
 
 
 @pytest.mark.asyncio

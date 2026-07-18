@@ -19,14 +19,15 @@ from typing import Any, ClassVar, Literal, Union, get_args, get_origin
 
 from pydantic import ValidationError
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Footer, Input, Label, Select, Static
 
 from geusemaker.cli.configuration import ConfigBuilder, DeploymentDraft
+from geusemaker.cli.tui._base import OperationalScreen
 from geusemaker.cli.tui.theme import GM_FAULT, GM_INK, GM_SIGNAL, GM_VARIABLES_TCSS
 from geusemaker.config import ConfigurationError
 from geusemaker.models import DeploymentConfig
@@ -139,7 +140,7 @@ def _placeholder(name: str, kind: FieldKind) -> str:
     return f"DEFAULT · {default}"
 
 
-class DeployScreen(Screen[None]):
+class DeployScreen(OperationalScreen):
     """Brutalist deploy form: draft editing, validation, YAML round-trip, launch."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -225,12 +226,34 @@ class DeployScreen(Screen[None]):
     }
     #deploy-actions {
         height: auto;
+        grid-size: 2;
+        grid-gutter: 0 1;
+        grid-rows: auto;
     }
     #deploy-actions Button {
-        margin-right: 1;
+        width: 1fr;
+        min-width: 12;
+    }
+    /* Narrow terminals (< 80 cols) have no room for a side-by-side layout.
+       Textual has no media queries, so on_resize toggles the -narrow class on
+       #deploy-workspace, stacking the panels into a single column so neither
+       the form inputs nor the side panel collapse to unusable widths. */
+    #deploy-workspace.-narrow {
+        layout: vertical;
+    }
+    #deploy-workspace.-narrow #deploy-form {
+        width: 1fr;
+        height: 2fr;
+    }
+    #deploy-workspace.-narrow #deploy-side {
+        width: 1fr;
+        height: 1fr;
     }
     """
     )
+
+    #: Terminal width (columns) below which the workspace stacks into one column.
+    NARROW_BREAKPOINT: ClassVar[int] = 80
 
     class LaunchRequested(Message):
         """Request the hosting app to execute a deployment for a built config."""
@@ -285,11 +308,12 @@ class DeployScreen(Screen[None]):
                     yield Static("PRESS V TO VALIDATE · CTRL+L TO LAUNCH", id="deploy-validation")
                 yield Input(placeholder="PATH TO CONFIG YAML · ENTER TO IMPORT", id="deploy-import-path")
                 yield Static("", id="deploy-status")
-                with Horizontal(id="deploy-actions"):
+                with Grid(id="deploy-actions"):
                     yield Button("LAUNCH ^L", id="deploy-launch")
                     yield Button("VALIDATE V", id="deploy-validate")
                     yield Button("EXPORT ^E", id="deploy-export")
                     yield Button("IMPORT ^O", id="deploy-import")
+        yield Footer()
 
     def _make_widget(self, name: str, kind: FieldKind) -> Select[str] | Checkbox | Input:
         field_id = f"field-{name}"
@@ -306,6 +330,18 @@ class DeployScreen(Screen[None]):
             self._sync_widgets()
         self._refresh_visibility()
         self._refresh_preview()
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Stack the workspace into one column on terminals too narrow to split.
+
+        Textual has no CSS media queries, so the responsive breakpoint is driven
+        here: the ``-narrow`` class (defined in ``DEFAULT_CSS``) is toggled on
+        ``#deploy-workspace`` whenever the width drops below ``NARROW_BREAKPOINT``.
+        """
+        if not self.is_mounted:
+            return
+        workspace = self.query_one("#deploy-workspace", Horizontal)
+        workspace.set_class(event.size.width < self.NARROW_BREAKPOINT, "-narrow")
 
     # ------------------------------------------------------------------
     # Builder → widgets

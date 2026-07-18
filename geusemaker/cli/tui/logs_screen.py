@@ -33,9 +33,9 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
-from textual.widgets import Label, ListItem, ListView, RichLog, Static
+from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 
+from geusemaker.cli.tui._base import OperationalScreen
 from geusemaker.cli.tui.theme import GM_FAULT, GM_MUTED, GM_SIGNAL, GM_VARIABLES_TCSS, GM_WARN
 from geusemaker.infra.state import StateError, StateManager
 
@@ -74,7 +74,7 @@ _ENDED_MARK = f"[bold {GM_MUTED}][ENDED][/bold {GM_MUTED}]"
 _DETACHED_MARK = f"[bold {GM_WARN}][DETACHED][/bold {GM_WARN}]"
 
 
-class LogsScreen(Screen[None]):
+class LogsScreen(OperationalScreen):
     """Log-target picker (instance files + containers) + live stream pane."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -201,6 +201,7 @@ class LogsScreen(Screen[None]):
                         markup=True,
                         highlight=False,
                     )
+        yield Footer()
 
     @staticmethod
     def _picker_items() -> list[ListItem]:

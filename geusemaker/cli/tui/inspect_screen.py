@@ -16,10 +16,10 @@ from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.screen import Screen
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Footer, Label, ListItem, ListView, Static
 
 from geusemaker.cli.display.listing import render_inspection
+from geusemaker.cli.tui._base import OperationalScreen
 from geusemaker.cli.tui.theme import GM_VARIABLES_TCSS
 from geusemaker.infra.state import StateManager
 from geusemaker.models import DeploymentState
@@ -27,7 +27,7 @@ from geusemaker.models import DeploymentState
 STACK_ITEM_PREFIX = "stack-"
 
 
-class InspectScreen(Screen[None]):
+class InspectScreen(OperationalScreen):
     """Stack picker + resource inventory backed by local state files only."""
 
     BINDINGS = [
@@ -128,6 +128,7 @@ class InspectScreen(Screen[None]):
             with VerticalScroll(id="inspect-detail"):
                 yield Static("INVENTORY", id="inspect-detail-title")
                 yield Static("LOADING LOCAL STATE…", id="inspect-detail-body")
+        yield Footer()
 
     def on_mount(self) -> None:
         self._load_stacks()

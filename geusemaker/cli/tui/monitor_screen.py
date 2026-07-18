@@ -24,9 +24,9 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
-from textual.screen import Screen
-from textual.widgets import DataTable, RichLog, Static
+from textual.widgets import DataTable, Footer, RichLog, Static
 
+from geusemaker.cli.tui._base import OperationalScreen
 from geusemaker.cli.tui.theme import GM_FAULT, GM_SIGNAL, GM_VARIABLES_TCSS, GM_WARN
 from geusemaker.infra.state import StateError, StateManager
 from geusemaker.models.health import HealthCheckResult
@@ -42,6 +42,8 @@ EVENT_LOG_MAX_LINES = 2000
 
 _OK_MARK = f"[bold {GM_SIGNAL}][OK][/bold {GM_SIGNAL}]"
 _WAIT_MARK = f"[bold {GM_WARN}][WAIT][/bold {GM_WARN}]"
+_DEGRADED_MARK = f"[bold {GM_WARN}][DEGRADED][/bold {GM_WARN}]"
+_STALE_MARK = f"[bold {GM_WARN}][STALE][/bold {GM_WARN}]"
 _ERROR_MARK = f"[bold {GM_FAULT}][ERROR][/bold {GM_FAULT}]"
 
 
@@ -59,7 +61,7 @@ async def default_health_checker(host: str) -> list[HealthCheckResult]:
     return results
 
 
-class MonitorScreen(Screen[None]):
+class MonitorScreen(OperationalScreen):
     """Per-service health table + event stream driven by a polling worker."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -163,6 +165,7 @@ class MonitorScreen(Screen[None]):
                 "[dim]LOG STREAM SLOT · SSM USERDATA / CONTAINER TAIL LANDS IN A LATER PHASE[/dim]",
                 id="monitor-log-slot",
             )
+        yield Footer()
 
     def on_mount(self) -> None:
         # Resolve every widget the worker touches exactly once, while the tree
@@ -216,7 +219,7 @@ class MonitorScreen(Screen[None]):
                 if not self._is_live():
                     return
                 self._poll_count += 1
-                self._log(f"{_ERROR_MARK} POLL {self._poll_count} FAILED · {exc}")
+                self._apply_failure(exc)
             else:
                 if not self._is_live():
                     return
@@ -261,15 +264,43 @@ class MonitorScreen(Screen[None]):
             if not result.healthy:
                 self._log(f"{_ERROR_MARK} {name.upper()} UNHEALTHY · {detail}")
             self._last_statuses[name] = result.healthy
+        total = len(results)
+        if total > 0 and healthy_count == total:
+            headline_mark = _OK_MARK
+        elif healthy_count == 0:
+            headline_mark = _ERROR_MARK
+        else:
+            headline_mark = _DEGRADED_MARK
         self._set_static(
             self._status,
-            f"{_OK_MARK} TARGET {self._host} · {healthy_count}/{len(results)} SERVICES HEALTHY",
+            f"{headline_mark} TARGET {self._host} · {healthy_count}/{total} SERVICES HEALTHY",
         )
         self._set_static(
             self._last_poll,
             f"LAST POLL · {stamp} UTC · CYCLE {self._poll_count}",
         )
-        self._log(f"[dim][POLL {self._poll_count}][/dim] {stamp} · {healthy_count}/{len(results)} OK")
+        self._log(f"[dim][POLL {self._poll_count}][/dim] {stamp} · {healthy_count}/{total} OK")
+
+    def _apply_failure(self, exc: Exception) -> None:
+        """Reflect a failed poll in the headline, timestamp, and event stream.
+
+        A failed health check must not leave the most prominent indicator stale
+        or falsely green. The headline flips to an explicit ``[STALE]`` state
+        (last poll failed, table data may be outdated), the LAST POLL line is
+        stamped with the failed attempt, and the retry interval is surfaced.
+        Uses the cached widget refs and skips any widget already pruned.
+        """
+        stamp = datetime.now(UTC).strftime("%H:%M:%S")
+        host = self._host or "—"
+        self._set_static(
+            self._status,
+            f"{_STALE_MARK} TARGET {host} · LAST POLL FAILED · NEXT RETRY {self.poll_interval:g}S",
+        )
+        self._set_static(
+            self._last_poll,
+            f"LAST POLL · {stamp} UTC · CYCLE {self._poll_count} · FAILED",
+        )
+        self._log(f"{_ERROR_MARK} POLL {self._poll_count} FAILED · {exc}")
 
     def _show_fatal(self, message: str) -> None:
         """Render an explicit error state — never a silent dead pane."""
