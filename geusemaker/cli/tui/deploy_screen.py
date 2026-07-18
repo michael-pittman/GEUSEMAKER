@@ -246,6 +246,10 @@ class DeployScreen(Screen[None]):
         config_path: Path | None = None,
     ) -> None:
         super().__init__()
+        #: Names of fields whose last widget edit was rejected by draft validation.
+        #: A non-empty set blocks launch/export (the draft silently differs from
+        #: the displayed widget value for these fields).
+        self._invalid_fields: set[str] = set()
         if config_path is not None:
             self._builder = ConfigBuilder.from_yaml(config_path)
         else:
@@ -384,9 +388,13 @@ class DeployScreen(Screen[None]):
         except (ValidationError, ValueError) as exc:
             error_slot.update(Text(f"INVALID · {self._error_text(exc)}", style=_FAULT))
             error_slot.display = True
+            self._invalid_fields.add(name)
+            self._refresh_action_availability()
             return
         error_slot.update("")
         error_slot.display = False
+        self._invalid_fields.discard(name)
+        self._refresh_action_availability()
         if name in VISIBILITY_TRIGGERS:
             self._refresh_visibility()
         self._refresh_preview()
@@ -436,6 +444,28 @@ class DeployScreen(Screen[None]):
         style = _FAULT if error else _SIGNAL
         self.query_one("#deploy-status", Static).update(Text(message, style=style))
 
+    def _first_invalid_field(self) -> str | None:
+        """Return the earliest (by form order) field with a rejected widget value."""
+        for name in FIELD_KINDS:
+            if name in self._invalid_fields:
+                return name
+        return None
+
+    def _refresh_action_availability(self) -> None:
+        """Disable LAUNCH/EXPORT while any field holds a rejected widget value."""
+        blocked = bool(self._invalid_fields)
+        for button_id in ("deploy-launch", "deploy-export"):
+            self.query_one(f"#{button_id}", Button).disabled = blocked
+
+    def _block_on_invalid_fields(self, verb: str) -> bool:
+        """If any field is invalid, set status, focus the first, and report blocked."""
+        first = self._first_invalid_field()
+        if first is None:
+            return False
+        self._set_status(f"CANNOT {verb} · FIX INVALID FIELDS", error=True)
+        self.query_one(f"#field-{first}").focus()
+        return True
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -452,6 +482,8 @@ class DeployScreen(Screen[None]):
 
     def action_launch(self) -> None:
         """Validate, then build and post LaunchRequested. Never posts when invalid."""
+        if self._block_on_invalid_fields("LAUNCH"):
+            return
         errors = self._builder.validate()
         self._render_validation(errors)
         if errors:
@@ -467,6 +499,8 @@ class DeployScreen(Screen[None]):
 
     def action_export_yaml(self) -> None:
         """Write the built config to <stack_name>.yaml in the current directory."""
+        if self._block_on_invalid_fields("EXPORT"):
+            return
         errors = self._builder.validate()
         if errors:
             self._render_validation(errors)
@@ -511,6 +545,8 @@ class DeployScreen(Screen[None]):
             error_slot = self.query_one(f"#field-error-{name}", Static)
             error_slot.update("")
             error_slot.display = False
+        self._invalid_fields.clear()
+        self._refresh_action_availability()
         self._refresh_visibility()
         self._refresh_preview()
         self._render_validation(self._builder.validate())

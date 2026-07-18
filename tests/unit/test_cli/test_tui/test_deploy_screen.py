@@ -16,7 +16,7 @@ from typing import Any  # noqa: E402
 from textual.app import App  # noqa: E402
 from textual.containers import Vertical  # noqa: E402
 from textual.pilot import Pilot  # noqa: E402
-from textual.widgets import Input, Select, Static  # noqa: E402
+from textual.widgets import Button, Input, Select, Static  # noqa: E402
 
 import geusemaker.cli.tui.deploy_screen as deploy_screen_module  # noqa: E402
 from geusemaker.cli.configuration import ConfigBuilder, DeploymentDraft  # noqa: E402
@@ -130,6 +130,63 @@ async def test_launch_with_invalid_draft_shows_errors_and_posts_nothing() -> Non
         validation = _rendered(app, "#deploy-validation")
         assert "STACK_NAME" in validation
         assert "LAUNCH BLOCKED" in _rendered(app, "#deploy-status")
+
+
+@pytest.mark.asyncio
+async def test_launch_blocked_while_field_widget_value_is_invalid() -> None:
+    """A field value the widget rejected must block launch, even though the
+    whole-draft validate() runs against the (unchanged) draft and would pass."""
+    screen = DeployScreen(initial_state=dict(VALID_STATE))
+    app = HostApp(screen)
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        field = app.screen.query_one("#field-rollback_timeout_minutes", Input)
+        # "abc" fails int coercion at the draft level, so the widget rejects it and
+        # the draft keeps its (valid, None) value -- whole-draft validate() cannot
+        # see the rejected widget value. This is precisely the P1 bug scenario.
+        field.value = "abc"
+        await _settle(pilot)
+        # Widget rejected: field flagged, draft untouched, buttons disabled.
+        assert app.screen.query_one("#field-error-rollback_timeout_minutes", Static).display
+        assert "INVALID" in _rendered(app, "#field-error-rollback_timeout_minutes")
+        assert screen.builder.draft.rollback_timeout_minutes is None
+        assert app.screen.query_one("#deploy-launch", Button).disabled
+        assert app.screen.query_one("#deploy-export", Button).disabled
+
+        await pilot.press("ctrl+l")
+        await _settle(pilot)
+        assert app.launches == []
+        status = _rendered(app, "#deploy-status")
+        assert "CANNOT LAUNCH" in status
+        assert "LAUNCH REQUESTED" not in status
+        assert app.screen.query_one("#field-error-rollback_timeout_minutes", Static).display
+
+        # Correcting the value re-enables launch and it proceeds normally.
+        field.value = "20"
+        await _settle(pilot)
+        assert not app.screen.query_one("#deploy-launch", Button).disabled
+        await pilot.press("ctrl+l")
+        await _settle(pilot)
+        assert len(app.launches) == 1
+        assert app.launches[0].rollback_timeout_minutes == 20
+        assert "LAUNCH REQUESTED" in _rendered(app, "#deploy-status")
+
+
+@pytest.mark.asyncio
+async def test_export_blocked_while_field_widget_value_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    screen = DeployScreen(initial_state=dict(VALID_STATE))
+    app = HostApp(screen)
+    async with app.run_test() as pilot:
+        await _settle(pilot)
+        app.screen.query_one("#field-rollback_timeout_minutes", Input).value = "abc"
+        await _settle(pilot)
+        await pilot.press("ctrl+e")
+        await _settle(pilot)
+        assert list(tmp_path.iterdir()) == []
+        assert "CANNOT EXPORT" in _rendered(app, "#deploy-status")
 
 
 @pytest.mark.asyncio
