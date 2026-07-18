@@ -126,13 +126,17 @@ def default_userdata_streamer(region: str) -> UserdataStreamer:
 
     def _stream(instance_id: str) -> Iterator[str]:
         from geusemaker.infra import AWSClientFactory
-        from geusemaker.services.ssm import SSMService
+        from geusemaker.services.ssm import SSMService, UserdataLogStream
 
         service = SSMService(AWSClientFactory(), region=region)
-        yield from service.stream_userdata_logs(
-            instance_id=instance_id,
-            poll_interval=2.0,
-            timeout_seconds=600,
+        # UserdataLogStream preserves the terminal reason (SUCCESS/ERROR/
+        # TIMEOUT) through this DI seam so the screen can render it accurately.
+        return UserdataLogStream(
+            service.stream_userdata_logs(
+                instance_id=instance_id,
+                poll_interval=2.0,
+                timeout_seconds=600,
+            )
         )
 
     return _stream
@@ -143,6 +147,17 @@ class DeployRunScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "request_dismiss", "BACK"),
+        # A live deploy must only be left via the double-press guard. Screen
+        # BINDINGS take priority over App BINDINGS, so bind the app's quit key
+        # ("q") to the SAME guarded action here — otherwise a stray "q" bubbles
+        # to the app's ("q", "quit") binding and kills the app mid-deploy,
+        # skipping the confirmation and the clean stream/UI teardown.
+        Binding("q", "request_dismiss", "BACK", show=False),
+        # Best-effort ctrl+c intercept. In Textual 8.2.8 ctrl+c does NOT quit
+        # (the app binds it to a "press ctrl+q to quit" notification, and the
+        # base Screen binds it to copy_text) — priority=True lets this win the
+        # priority binding pass so ctrl+c arms the same guard instead.
+        Binding("ctrl+c", "request_dismiss", "BACK", show=False, priority=True),
     ]
 
     # $gm-* tokens come from theme.GM_VARIABLES_TCSS (DEFAULT_CSS cannot see
@@ -209,7 +224,11 @@ class DeployRunScreen(Screen[None]):
         self._instance_id: str | None = None
         self._stream_started = False
         self._deploy_running = True
-        self._escape_armed = False
+        # Shared armed state for the double-press dismiss guard: the FIRST
+        # escape/q/ctrl+c arms it (warn line), the SECOND detaches. All three
+        # keys route through action_request_dismiss, so one press of any of
+        # them arms the guard and any second press dismisses.
+        self._dismiss_armed = False
         # Thread-shared guards: set on dismissal/unmount (drop late events) and
         # at terminal state (detach the userdata stream generator cleanly).
         self._ui_closed = threading.Event()
@@ -257,8 +276,8 @@ class DeployRunScreen(Screen[None]):
         self._stream_stop.set()
 
     def action_request_dismiss(self) -> None:
-        if self._deploy_running and not self._escape_armed:
-            self._escape_armed = True
+        if self._deploy_running and not self._dismiss_armed:
+            self._dismiss_armed = True
             self._write_log(f"{_WARN_MARK} DEPLOY STILL RUNNING · ESC AGAIN TO DETACH")
             return
         self._ui_closed.set()
@@ -317,9 +336,24 @@ class DeployRunScreen(Screen[None]):
                 close()
         if detached:
             self._call_ui(self._write_log, f"{_WARN_MARK} USERDATA STREAM DETACHED")
+            return
+        # SSMService ends the stream on the completion marker/guard (SUCCESS),
+        # the error guard (ERROR), or the 600s timeout (TIMEOUT) — render the
+        # actual outcome, never a blanket "OK" for error/timeout.
+        from geusemaker.services.ssm import UserdataCompletion
+
+        completion = getattr(stream, "completion", None)
+        if completion == UserdataCompletion.ERROR:
+            self._call_ui(
+                self._write_log,
+                f"{_ERROR_MARK} USERDATA INITIALIZATION FAILED · {instance_id}",
+            )
+        elif completion == UserdataCompletion.TIMEOUT:
+            self._call_ui(
+                self._write_log,
+                f"{_WARN_MARK} USERDATA STREAM TIMED OUT · {instance_id}",
+            )
         else:
-            # SSMService ends the stream on completion marker, error guard, or
-            # 600s timeout — always render the termination explicitly.
             self._call_ui(self._write_log, f"{_OK_MARK} USERDATA STREAM ENDED · {instance_id}")
 
     def _maybe_start_userdata_stream(self) -> None:

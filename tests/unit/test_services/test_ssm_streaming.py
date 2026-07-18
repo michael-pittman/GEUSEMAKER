@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from geusemaker.services.ssm import SSMService
+from geusemaker.services.ssm import SSMService, UserdataCompletion, UserdataLogStream
 
 
 class StreamingStubSSM(SSMService):
@@ -328,6 +328,114 @@ def test_follow_container_logs_raises_when_agent_not_ready() -> None:
 
     with pytest.raises(RuntimeError, match="SSM agent not ready"):
         next(gen)
+
+
+# ---------------------------------------------------------------------------
+# stream_userdata_logs — typed terminal completion
+# ---------------------------------------------------------------------------
+
+
+def _drain(gen: Any) -> tuple[list[str], Any]:
+    """Consume a generator, returning (yielded lines, StopIteration.value)."""
+    lines: list[str] = []
+    try:
+        while True:
+            lines.append(next(gen))
+    except StopIteration as stop:
+        return lines, stop.value
+
+
+def test_stream_userdata_logs_success_on_completion_marker() -> None:
+    """The completion marker terminates the stream with SUCCESS."""
+    stub = StreamingStubSSM(results=[_success("Installing docker...\nGeuseMaker initialization complete!\n")])
+    gen = stub.stream_userdata_logs("i-123", poll_interval=0)
+
+    lines, completion = _drain(gen)
+
+    assert completion is UserdataCompletion.SUCCESS
+    assert "Installing docker..." in lines
+    assert "GeuseMaker initialization complete!" in lines
+    # Only the single tail poll was needed; no guard check after the marker.
+    assert len(stub.sent_commands) == 1
+
+
+def test_stream_userdata_logs_success_on_completion_guard() -> None:
+    """A completion guard file (no marker line) terminates with SUCCESS."""
+    stub = StreamingStubSSM(
+        results=[
+            _success("boot line\n"),  # tail poll
+            _success("done"),  # completion guard check -> done
+        ]
+    )
+    gen = stub.stream_userdata_logs("i-123", poll_interval=0)
+
+    lines, completion = _drain(gen)
+
+    assert completion is UserdataCompletion.SUCCESS
+    assert lines == ["boot line"]
+    assert stub.sent_commands[-1] == ("[ -f /var/lib/geusemaker/userdata-complete ] && echo 'done' || echo 'running'")
+
+
+def test_stream_userdata_logs_error_on_error_marker_and_guard() -> None:
+    """An error marker confirmed by the error guard terminates with ERROR."""
+    stub = StreamingStubSSM(
+        results=[
+            _success("ERROR: userdata failed at line 42\n"),  # tail poll
+            _success("error"),  # error guard check -> error
+        ]
+    )
+    gen = stub.stream_userdata_logs("i-123", poll_interval=0)
+
+    lines, completion = _drain(gen)
+
+    assert completion is UserdataCompletion.ERROR
+    assert lines == ["ERROR: userdata failed at line 42"]
+    assert stub.sent_commands[-1] == "[ -f /var/lib/geusemaker/userdata-error ] && echo 'error' || echo 'ok'"
+
+
+def test_stream_userdata_logs_timeout_when_no_terminal_marker() -> None:
+    """Exhausting the timeout without a terminal marker yields TIMEOUT."""
+    stub = StreamingStubSSM(results=[])
+    gen = stub.stream_userdata_logs("i-123", poll_interval=0, timeout_seconds=0)
+
+    lines, completion = _drain(gen)
+
+    assert completion is UserdataCompletion.TIMEOUT
+    assert lines == []
+    # No polling happened, but the agent readiness check still ran.
+    assert stub.agent_waits == 1
+    assert stub.sent_commands == []
+
+
+def test_stream_userdata_logs_raises_when_agent_not_ready() -> None:
+    """SSM agent never coming online raises RuntimeError (unchanged behavior)."""
+    stub = StreamingStubSSM(results=[], agent_ready=False)
+    gen = stub.stream_userdata_logs("i-123", poll_interval=0)
+
+    with pytest.raises(RuntimeError, match="SSM agent not ready"):
+        next(gen)
+
+
+def test_userdata_log_stream_captures_completion() -> None:
+    """UserdataLogStream exposes the terminal reason after full iteration."""
+    stub = StreamingStubSSM(results=[_success("line1\nGeuseMaker initialization complete!\n")])
+    stream = UserdataLogStream(stub.stream_userdata_logs("i-123", poll_interval=0))
+
+    lines = list(stream)
+
+    assert stream.completion is UserdataCompletion.SUCCESS
+    assert "line1" in lines
+
+
+def test_userdata_log_stream_completion_none_when_abandoned() -> None:
+    """Abandoning iteration early leaves completion as None."""
+    stub = StreamingStubSSM(results=[_success("boot line\n"), _success("done")])
+    stream = UserdataLogStream(stub.stream_userdata_logs("i-123", poll_interval=0))
+
+    assert next(stream) == "boot line"
+    stream.close()
+
+    assert stream.completion is None
 
 
 def test_resolve_container_name_known_services() -> None:

@@ -17,7 +17,7 @@ from geusemaker.cli.output import (
 )
 from geusemaker.infra import AWSClientFactory, StateManager
 from geusemaker.services.instance_resolver import InstanceResolver
-from geusemaker.services.ssm import SSMService
+from geusemaker.services.ssm import SSMService, UserdataCompletion, UserdataLogStream
 
 
 @click.command("logs")
@@ -116,12 +116,26 @@ def _stream_userdata_logs(ssm_service: SSMService, instance_id: str) -> None:
         f"{EMOJI['info']} Streaming UserData logs (Ctrl+C to stop)...",
         verbosity="info",
     )
+    stream = UserdataLogStream(ssm_service.stream_userdata_logs(instance_id))
     try:
-        for line in ssm_service.stream_userdata_logs(instance_id):
+        for line in stream:
             console.print(line, verbosity="info")
-        console.print(f"{EMOJI['check']} UserData initialization complete.", verbosity="info")
     except KeyboardInterrupt:
         console.print(f"{EMOJI['warning']} Log streaming interrupted.", verbosity="warning")
+        return
+
+    # The stream ends on the completion marker/guard, the error guard, or the
+    # 600s timeout — render the actual outcome instead of assuming success.
+    if stream.completion == UserdataCompletion.ERROR:
+        console.print(f"{EMOJI['error']} UserData initialization failed.", verbosity="error")
+        raise SystemExit(1)
+    if stream.completion == UserdataCompletion.TIMEOUT:
+        console.print(
+            f"{EMOJI['warning']} UserData initialization did not complete before the stream timed out.",
+            verbosity="warning",
+        )
+        return
+    console.print(f"{EMOJI['check']} UserData initialization complete.", verbosity="info")
 
 
 def _stream_container_logs(ssm_service: SSMService, instance_id: str, service: str) -> None:

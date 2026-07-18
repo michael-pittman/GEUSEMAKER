@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +28,7 @@ from geusemaker.cli.tui.deploy_run_screen import (  # noqa: E402
     stages_for_config,
 )
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState  # noqa: E402
+from geusemaker.services.ssm import UserdataCompletion, UserdataLogStream  # noqa: E402
 
 BRUTALIST_CSS = Path(tui_pkg.__file__).parent / "brutalist.tcss"
 
@@ -165,22 +166,34 @@ class BlockedExecutor:
 
 
 class FakeStreamer:
-    """Yields scripted lines, records calls, signals completion; no SSM."""
+    """Yields scripted lines, records calls, signals completion; no SSM.
 
-    def __init__(self, lines: list[str] | None = None, done: threading.Event | None = None) -> None:
+    ``completion`` (optional) is delivered as the wrapped stream's terminal
+    reason via ``UserdataLogStream.completion`` — mirrors the real streamer,
+    which preserves the SSMService completion through the DI seam.
+    """
+
+    def __init__(
+        self,
+        lines: list[str] | None = None,
+        done: threading.Event | None = None,
+        completion: UserdataCompletion | None = None,
+    ) -> None:
         self.lines = lines if lines is not None else []
         self.done = done
+        self.completion = completion
         self.calls: list[str] = []
 
     def __call__(self, instance_id: str) -> Iterator[str]:
         self.calls.append(instance_id)
 
-        def _gen() -> Iterator[str]:
+        def _gen() -> Generator[str, None, UserdataCompletion | None]:
             yield from self.lines
             if self.done is not None:
                 self.done.set()
+            return self.completion
 
-        return _gen()
+        return UserdataLogStream(_gen())
 
 
 class DeployRunTestApp(App[None]):
@@ -271,6 +284,7 @@ async def test_userdata_stream_attaches_with_captured_instance_id() -> None:
     streamer = FakeStreamer(
         lines=["Installing docker...", "Mounting EFS fs-1", "GeuseMaker initialization complete!"],
         done=stream_done,
+        completion=UserdataCompletion.SUCCESS,
     )
     # Executor waits for the fake stream to drain before emitting finalize,
     # exactly like the real runner (stream runs before run() returns).
@@ -295,6 +309,53 @@ async def test_userdata_stream_attaches_with_captured_instance_id() -> None:
         # Progress events render as "[STAGE] message" lines.
         assert "[VPC] VPC ready" in events_text
         assert "[EC2] Instance running" in events_text
+
+
+@pytest.mark.asyncio
+async def test_userdata_stream_error_renders_error_line() -> None:
+    stream_done = threading.Event()
+    streamer = FakeStreamer(
+        lines=["Installing docker...", "ERROR: efs mount failed"],
+        done=stream_done,
+        completion=UserdataCompletion.ERROR,
+    )
+    executor = ScriptedExecutor(
+        TIER1_EVENTS,
+        _state(),
+        wait_before_index=len(TIER1_EVENTS) - 1,
+        wait_on=stream_done,
+    )
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=streamer)
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: "USERDATA INITIALIZATION FAILED" in _event_text(screen))
+        events_text = _event_text(screen)
+        assert "USERDATA INITIALIZATION FAILED" in events_text
+        # The false-success line must NOT appear on an error termination.
+        assert "USERDATA STREAM ENDED" not in events_text
+
+
+@pytest.mark.asyncio
+async def test_userdata_stream_timeout_renders_warning_line() -> None:
+    stream_done = threading.Event()
+    streamer = FakeStreamer(
+        lines=["Installing docker...", "still working"],
+        done=stream_done,
+        completion=UserdataCompletion.TIMEOUT,
+    )
+    executor = ScriptedExecutor(
+        TIER1_EVENTS,
+        _state(),
+        wait_before_index=len(TIER1_EVENTS) - 1,
+        wait_on=stream_done,
+    )
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=streamer)
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: "USERDATA STREAM TIMED OUT" in _event_text(screen))
+        events_text = _event_text(screen)
+        assert "USERDATA STREAM TIMED OUT" in events_text
+        assert "USERDATA STREAM ENDED" not in events_text
 
 
 @pytest.mark.asyncio
@@ -338,6 +399,106 @@ async def test_failure_marks_stage_error_and_keeps_screen_open() -> None:
         await pilot.press("escape")
         await pilot.pause(0.1)
         assert screen not in app.screen_stack
+
+
+@pytest.mark.asyncio
+async def test_q_while_running_arms_guard_then_dismisses_without_quitting() -> None:
+    """`q` during a live deploy must route through the SAME guard as escape.
+
+    The app-level ("q", "quit") binding would kill the whole app; the screen's
+    own `q` binding takes priority and arms the double-press guard instead.
+    A single `q` must NOT quit the app; a second press detaches cleanly.
+    """
+    executor = BlockedExecutor(_state())
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=FakeStreamer())
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: screen.stage_statuses["vpc"] == STATUS_ACTIVE)
+        # First `q`: guard arms, warn line, screen stays, app still running.
+        await pilot.press("q")
+        await pilot.pause(0.1)
+        assert "DEPLOY STILL RUNNING · ESC AGAIN TO DETACH" in _event_text(screen)
+        assert screen in app.screen_stack
+        assert app.is_running
+        # Second `q`: detaches with clean teardown (stop/ui-closed both set).
+        await pilot.press("q")
+        await pilot.pause(0.1)
+        assert screen not in app.screen_stack
+        assert app.is_running
+        assert screen._ui_closed.is_set()
+        assert screen._stream_stop.is_set()
+        executor.gate.set()
+        await _wait_for(pilot, lambda: executor.finished.is_set())
+        await pilot.pause(0.2)
+        assert app.is_running
+
+
+@pytest.mark.asyncio
+async def test_single_q_during_deploy_does_not_quit_app() -> None:
+    """A single `q` mid-deploy must never exit the app (guard only arms)."""
+    executor = BlockedExecutor(_state())
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=FakeStreamer())
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: screen.stage_statuses["vpc"] == STATUS_ACTIVE)
+        await pilot.press("q")
+        await pilot.pause(0.2)
+        assert app.is_running
+        assert screen in app.screen_stack
+        assert screen._dismiss_armed
+        executor.gate.set()
+        await _wait_for(pilot, lambda: executor.finished.is_set())
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_while_running_routes_through_guard() -> None:
+    """ctrl+c is intercepted (priority binding) and shares the same guard.
+
+    In Textual 8.2.8 ctrl+c does not quit — the app maps it to a "press ctrl+q
+    to quit" notification and the base Screen maps it to copy_text. Our
+    priority `ctrl+c` binding wins the priority pass so it arms/detaches via
+    the same guard as escape and `q`.
+    """
+    executor = BlockedExecutor(_state())
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=FakeStreamer())
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: screen.stage_statuses["vpc"] == STATUS_ACTIVE)
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert screen._dismiss_armed
+        assert "DEPLOY STILL RUNNING · ESC AGAIN TO DETACH" in _event_text(screen)
+        assert screen in app.screen_stack
+        assert app.is_running
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.1)
+        assert screen not in app.screen_stack
+        assert app.is_running
+        assert screen._ui_closed.is_set()
+        assert screen._stream_stop.is_set()
+        executor.gate.set()
+        await _wait_for(pilot, lambda: executor.finished.is_set())
+
+
+@pytest.mark.asyncio
+async def test_mixed_q_then_escape_share_one_armed_state() -> None:
+    """The armed state is unified: `q` arms, escape completes the dismiss."""
+    executor = BlockedExecutor(_state())
+    screen = DeployRunScreen(config=_config(), executor=executor, userdata_streamer=FakeStreamer())
+    app = DeployRunTestApp(screen)
+    async with app.run_test() as pilot:
+        await _wait_for(pilot, lambda: screen.stage_statuses["vpc"] == STATUS_ACTIVE)
+        await pilot.press("q")
+        await pilot.pause(0.1)
+        assert screen._dismiss_armed
+        assert screen in app.screen_stack
+        # A different guard key (escape) completes the dismiss.
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert screen not in app.screen_stack
+        assert app.is_running
+        executor.gate.set()
+        await _wait_for(pilot, lambda: executor.finished.is_set())
 
 
 @pytest.mark.asyncio

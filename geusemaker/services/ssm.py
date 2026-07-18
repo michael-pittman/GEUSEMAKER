@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shlex
 import time
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Iterator
+from enum import StrEnum
 from typing import Any
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -23,6 +24,50 @@ CONTAINER_LOG_SERVICES: dict[str, str] = {
 
 # Consecutive SSM command failures tolerated before a streaming generator aborts.
 _MAX_CONSECUTIVE_STREAM_FAILURES = 3
+
+
+class UserdataCompletion(StrEnum):
+    """Typed reason a UserData log stream terminated.
+
+    String values match ``wait_for_userdata_completion``'s vocabulary so the
+    two APIs report outcomes identically.
+    """
+
+    SUCCESS = "success"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+
+
+class UserdataLogStream:
+    """Iterator adapter that captures a UserData stream's terminal reason.
+
+    ``stream_userdata_logs`` yields log lines and then *returns* a
+    ``UserdataCompletion`` (delivered as the value of the terminating
+    ``StopIteration``). A plain ``for`` loop discards that value, so wrap the
+    generator here: iterate lines as usual, then read :attr:`completion` once
+    iteration is exhausted. If iteration is abandoned early (e.g. a detach),
+    :attr:`completion` stays ``None``.
+    """
+
+    def __init__(self, source: Iterator[str]) -> None:
+        self._source = source
+        self.completion: UserdataCompletion | None = None
+
+    def __iter__(self) -> UserdataLogStream:
+        return self
+
+    def __next__(self) -> str:
+        try:
+            return next(self._source)
+        except StopIteration as stop:
+            if isinstance(stop.value, UserdataCompletion):
+                self.completion = stop.value
+            raise
+
+    def close(self) -> None:
+        close = getattr(self._source, "close", None)
+        if callable(close):
+            close()
 
 
 class SSMService(BaseService):
@@ -257,14 +302,15 @@ class SSMService(BaseService):
         instance_id: str,
         poll_interval: float = 2.0,
         timeout_seconds: int = 600,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[str, None, UserdataCompletion]:
         """Stream UserData initialization logs in real time.
 
         Polls the log file every poll_interval seconds and yields new lines as they appear.
         Stops when:
-        - "GeuseMaker initialization complete!" message is found
-        - Error guard file is detected
-        - Timeout is reached
+        - "GeuseMaker initialization complete!" message is found -> SUCCESS
+        - Completion guard file appears -> SUCCESS
+        - Error marker + error guard file is detected -> ERROR
+        - Timeout is reached without a terminal marker -> TIMEOUT
 
         Args:
             instance_id: EC2 instance ID
@@ -273,6 +319,13 @@ class SSMService(BaseService):
 
         Yields:
             New log lines as they become available
+
+        Returns:
+            The terminal ``UserdataCompletion`` reason, delivered as the value
+            of the final ``StopIteration``. Consumers that must distinguish
+            outcomes should wrap this generator in :class:`UserdataLogStream`
+            (or capture ``StopIteration.value`` from a manual ``next`` loop);
+            a plain ``for`` loop silently discards it.
 
         Raises:
             RuntimeError: If SSM agent not ready or logs unavailable
@@ -311,7 +364,7 @@ class SSMService(BaseService):
 
                 # Check for completion or error markers
                 if completion_marker in line:
-                    return
+                    return UserdataCompletion.SUCCESS
                 if error_marker in line:
                     # Check if error guard file exists
                     check_cmd = self.send_shell_commands(
@@ -322,7 +375,7 @@ class SSMService(BaseService):
                     )
                     check_result = self.wait_for_command(check_cmd, instance_id, timeout_seconds=30)
                     if check_result.get("StandardOutputContent", "").strip() == "error":
-                        return
+                        return UserdataCompletion.ERROR
 
             # Check for completion guard file
             guard_cmd = self.send_shell_commands(
@@ -333,9 +386,12 @@ class SSMService(BaseService):
             )
             guard_result = self.wait_for_command(guard_cmd, instance_id, timeout_seconds=30)
             if guard_result.get("StandardOutputContent", "").strip() == "done":
-                return
+                return UserdataCompletion.SUCCESS
 
             time.sleep(poll_interval)
+
+        # Loop exited without hitting a terminal marker or guard file.
+        return UserdataCompletion.TIMEOUT
 
     @staticmethod
     def resolve_container_name(service: str) -> str:
@@ -555,4 +611,4 @@ class SSMService(BaseService):
         return False
 
 
-__all__ = ["CONTAINER_LOG_SERVICES", "SSMService"]
+__all__ = ["CONTAINER_LOG_SERVICES", "SSMService", "UserdataCompletion", "UserdataLogStream"]

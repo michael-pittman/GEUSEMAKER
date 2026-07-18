@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -240,6 +241,95 @@ async def test_d_key_opens_deploy_form_and_launch_runs_executor(tmp_path: Path) 
         await pilot.press("escape")
         await pilot.pause(0.3)
         assert not isinstance(app.screen, DeployRunScreen)
+
+
+class GatedDeployExecutor:
+    """Emits one event then blocks so the run screen stays live for the test."""
+
+    def __init__(self) -> None:
+        self.gate = threading.Event()
+
+    def __call__(self, config, on_progress):  # type: ignore[no-untyped-def]
+        from geusemaker.cli.progress_events import ProgressEvent
+
+        on_progress(ProgressEvent(stage="vpc", message="Creating VPC", resource_id="vpc-1"))
+        if not self.gate.wait(timeout=10):
+            raise RuntimeError("gate never released")
+        cost = CostTracking(
+            instance_type="t3.medium",
+            is_spot=True,
+            on_demand_price_per_hour=Decimal("0.04"),
+            estimated_monthly_cost=Decimal("25.0"),
+        )
+        return DeploymentState(
+            stack_name=config.stack_name,
+            status="running",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            vpc_id="vpc-1",
+            subnet_ids=["subnet-1"],
+            security_group_id="sg-1",
+            efs_id="fs-1",
+            efs_mount_target_id="fsmt-1",
+            instance_id="i-1",
+            keypair_name="kp-1",
+            public_ip="1.2.3.4",
+            private_ip="10.0.0.1",
+            n8n_url="http://1.2.3.4:5678",
+            cost=cost,
+            config=DeploymentConfig(stack_name=config.stack_name, tier=config.tier, region=config.region),
+        )
+
+
+@pytest.mark.asyncio
+async def test_q_during_live_deploy_does_not_quit_app(tmp_path: Path) -> None:
+    """Regression: `q` mid-deploy must arm the run screen's guard, not quit.
+
+    The app-level ("q", "quit") binding would bypass the double-press
+    confirmation; the run screen's own `q` binding takes priority.
+    """
+    from geusemaker.cli.tui.deploy_run_screen import DeployRunScreen
+    from geusemaker.cli.tui.deploy_screen import DeployScreen
+
+    executor = GatedDeployExecutor()
+    app = _app(tmp_path, stack_name="alpha", deploy_executor=executor)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause(0.3)
+        assert isinstance(app.screen, DeployScreen)
+        from textual.widgets import Select
+
+        app.screen.query_one("#field-tier", Select).value = "dev"
+        await pilot.pause(0.2)
+        await pilot.press("ctrl+l")
+        await pilot.pause(0.6)
+        assert isinstance(app.screen, DeployRunScreen)
+        run_screen = app.screen
+        # Deploy still running (executor blocked) -> single `q` must NOT quit.
+        await pilot.press("q")
+        await pilot.pause(0.2)
+        assert app.is_running
+        assert isinstance(app.screen, DeployRunScreen)
+        assert run_screen._dismiss_armed
+        # Second `q` detaches cleanly; app keeps running.
+        await pilot.press("q")
+        await pilot.pause(0.2)
+        assert app.is_running
+        assert not isinstance(app.screen, DeployRunScreen)
+        executor.gate.set()
+        await pilot.pause(0.2)
+
+
+@pytest.mark.asyncio
+async def test_q_on_hub_still_quits_app(tmp_path: Path) -> None:
+    """The `q` override is scoped to the run screen: the hub still quits on `q`."""
+    app = _app(tmp_path)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        await pilot.press("q")
+        await pilot.pause(0.2)
+        assert not app.is_running
 
 
 @pytest.mark.asyncio

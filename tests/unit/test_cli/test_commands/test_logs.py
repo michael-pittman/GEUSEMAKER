@@ -117,8 +117,59 @@ def test_logs_follow_without_service_streams_userdata(tmp_path: Path, monkeypatc
     )
     assert result.exit_code == 0
     assert "userdata boot line" in result.output
+    assert "initialization complete" in result.output.lower()
     assert userdata_calls == ["i-123456"]
     assert container_calls == []
+
+
+@mock_aws
+def test_logs_follow_userdata_error_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream that ends via the error guard reports failure and exits non-zero."""
+    _make_state("demo", tmp_path)
+
+    from geusemaker.services import ssm
+    from geusemaker.services.ssm import UserdataCompletion
+
+    def fake_stream_userdata_logs(self, instance_id: str, **kwargs):  # noqa: ARG001
+        yield "boot line"
+        return UserdataCompletion.ERROR
+
+    monkeypatch.setattr(ssm.SSMService, "stream_userdata_logs", fake_stream_userdata_logs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["logs", "demo", "--follow", "--state-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 1
+    assert "boot line" in result.output
+    assert "failed" in result.output.lower()
+    assert "initialization complete" not in result.output.lower()
+
+
+@mock_aws
+def test_logs_follow_userdata_timeout_warns_and_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream that ends via timeout warns but does not claim success."""
+    _make_state("demo", tmp_path)
+
+    from geusemaker.services import ssm
+    from geusemaker.services.ssm import UserdataCompletion
+
+    def fake_stream_userdata_logs(self, instance_id: str, **kwargs):  # noqa: ARG001
+        yield "boot line"
+        return UserdataCompletion.TIMEOUT
+
+    monkeypatch.setattr(ssm.SSMService, "stream_userdata_logs", fake_stream_userdata_logs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["logs", "demo", "--follow", "--state-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 0
+    assert "boot line" in result.output
+    assert "timed out" in result.output.lower()
+    assert "initialization complete" not in result.output.lower()
 
 
 @mock_aws
