@@ -54,35 +54,46 @@ def resolve_networking(
 
     subnet_lookup = {subnet.subnet_id: subnet for subnet in (vpc.public_subnets + vpc.private_subnets)}
 
+    # When a spot AZ was priced and capacity-validated, compute and EFS MUST land
+    # in that AZ or the selected spot price/capacity assumption is void. Enforce it
+    # (fail fast) instead of silently launching elsewhere and misreporting cost.
+    spot_az = selection.availability_zone if selection.is_spot else None
+
     # Select public subnet for EC2 instance
     if config.subnet_id:
         if config.subnet_id not in public_subnet_ids:
             raise OrchestrationError(
                 f"Configured subnet {config.subnet_id} is not a public subnet in VPC {vpc.vpc_id}",
             )
+        if spot_az:
+            pinned_subnet = subnet_lookup.get(config.subnet_id)
+            pinned_az = pinned_subnet.availability_zone if pinned_subnet else None
+            if pinned_az != spot_az:
+                raise OrchestrationError(
+                    f"Pinned subnet {config.subnet_id} is in {pinned_az}, but the lowest-priced "
+                    f"spot capacity was selected in {spot_az}. Launching there would not get the "
+                    f"selected spot price. Pin a public subnet in {spot_az} or unset subnet_id.",
+                )
         chosen_public_subnet_id = config.subnet_id
+    elif spot_az:
+        az_match = next(
+            (
+                subnet.subnet_id
+                for subnet in vpc.public_subnets
+                if subnet.availability_zone == spot_az and subnet.subnet_id in public_subnet_ids
+            ),
+            None,
+        )
+        if az_match is None:
+            raise OrchestrationError(
+                f"No public subnet in {spot_az} where the spot price/capacity was validated; "
+                f"cannot honor the selected spot price. Provide a public subnet in {spot_az} "
+                "or disable spot.",
+            )
+        chosen_public_subnet_id = az_match
+        LOGGER.info(f"Placing compute in {spot_az} to match the selected spot price.")
     else:
         chosen_public_subnet_id = public_subnet_ids[0]
-        if selection.availability_zone:
-            az_match = next(
-                (
-                    subnet.subnet_id
-                    for subnet in vpc.public_subnets
-                    if subnet.availability_zone == selection.availability_zone
-                ),
-                None,
-            )
-            if az_match:
-                chosen_public_subnet_id = az_match
-                LOGGER.info(f"Placing compute in {selection.availability_zone} to match spot pricing.")
-            else:
-                fallback_subnet = subnet_lookup.get(chosen_public_subnet_id)
-                fallback_az = fallback_subnet.availability_zone if fallback_subnet else "unknown"
-                LOGGER.warning(
-                    f"No public subnet in {selection.availability_zone} where spot "
-                    f"pricing/capacity was validated; launching in {fallback_az} instead. "
-                    "Actual spot price and capacity may differ."
-                )
 
     # Select storage subnet for EFS mount target
     # CRITICAL: EFS mount targets must be in same subnet/AZ as EC2 instance for DNS resolution
@@ -92,6 +103,15 @@ def resolve_networking(
             raise OrchestrationError(
                 f"Configured storage subnet {chosen_storage_subnet_id} is not part of VPC {vpc.vpc_id}",
             )
+        if spot_az:
+            storage_subnet = subnet_lookup.get(chosen_storage_subnet_id)
+            storage_az = storage_subnet.availability_zone if storage_subnet else None
+            if storage_az != spot_az:
+                raise OrchestrationError(
+                    f"Pinned storage subnet {chosen_storage_subnet_id} is in {storage_az}, but "
+                    f"compute/EFS must be in the selected spot AZ {spot_az} for same-AZ mounting. "
+                    f"Pin a storage subnet in {spot_az} or unset storage_subnet_id.",
+                )
     else:
         # Default: use same subnet as EC2 instance to guarantee same-AZ placement
         chosen_storage_subnet_id = chosen_public_subnet_id

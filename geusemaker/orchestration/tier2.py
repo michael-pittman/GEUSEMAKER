@@ -281,8 +281,16 @@ class Tier2Orchestrator(Tier1Orchestrator):
         )
 
     def _select_alb_subnets(self, tier1_state: DeploymentState) -> list[str]:
-        """Pick ALB subnets (delegates to stages.alb.select_alb_subnets)."""
-        return select_alb_subnets(self.ec2_service, tier1_state)
+        """Pick ALB subnets (delegates to stages.alb.select_alb_subnets).
+
+        The storage subnet is co-located with compute (same AZ as the selected
+        spot instance), so it identifies the AZ the ALB should prefer including.
+        """
+        return select_alb_subnets(
+            self.ec2_service,
+            tier1_state,
+            preferred_subnet_id=tier1_state.storage_subnet_id,
+        )
 
     def _register_instance(
         self,

@@ -24,13 +24,21 @@ from geusemaker.services.alb import ALBService
 LOGGER = logging.getLogger(__name__)
 
 
-def select_alb_subnets(ec2_service: Any, tier1_state: DeploymentState) -> list[str]:
+def select_alb_subnets(
+    ec2_service: Any,
+    tier1_state: DeploymentState,
+    preferred_subnet_id: str | None = None,
+) -> list[str]:
     """Pick two subnets for the internet-facing ALB, preferring public ones in distinct AZs.
 
     tier1 state stores public and private subnet ids in one list, so blindly
     slicing can hand the ALB a private subnet or two subnets in the same AZ
-    (both rejected or broken).  Falls back to the first two ids when subnet
-    details cannot be fetched (e.g. stub services in tests).
+    (both rejected or broken).  When ``preferred_subnet_id`` is given (the
+    compute/spot subnet), its AZ is preferred as one of the two so the ALB stays
+    co-located with the instance it fronts.  The second subnet is any public
+    subnet in a different AZ, preserving the multi-AZ requirement.  Falls back to
+    the first two ids when subnet details cannot be fetched (e.g. stub services in
+    tests).
     """
     subnet_ids = tier1_state.subnet_ids
     describe = getattr(ec2_service, "describe_subnets", None)
@@ -42,8 +50,22 @@ def select_alb_subnets(ec2_service: Any, tier1_state: DeploymentState) -> list[s
         LOGGER.debug(f"Could not inspect subnets for ALB placement ({exc}); using first two.")
         return subnet_ids[:2]
 
-    # Public subnets first, then one subnet per AZ.
-    ordered = sorted(subnets, key=lambda s: not s.get("MapPublicIpOnLaunch", False))
+    # Determine the AZ to prefer (the compute/spot AZ) from the preferred subnet.
+    preferred_az: str | None = None
+    if preferred_subnet_id:
+        preferred_az = next(
+            (s.get("AvailabilityZone") for s in subnets if s.get("SubnetId") == preferred_subnet_id),
+            None,
+        )
+
+    # Public subnets first; within public, the preferred (compute) AZ first, then
+    # one subnet per remaining AZ.
+    def order_key(subnet: dict) -> tuple[bool, bool]:
+        is_public = bool(subnet.get("MapPublicIpOnLaunch", False))
+        in_preferred_az = preferred_az is not None and subnet.get("AvailabilityZone") == preferred_az
+        return (not is_public, not in_preferred_az)
+
+    ordered = sorted(subnets, key=order_key)
     chosen: list[str] = []
     seen_azs: set[str] = set()
     for subnet in ordered:

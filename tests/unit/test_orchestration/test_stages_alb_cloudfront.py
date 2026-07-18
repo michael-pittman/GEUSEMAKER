@@ -71,6 +71,24 @@ def test_select_alb_subnets_prefers_public_distinct_azs() -> None:
     assert chosen == ["subnet-pub-a", "subnet-pub-b"]
 
 
+def test_select_alb_subnets_prefers_compute_az() -> None:
+    """The compute/spot AZ (via preferred_subnet_id) is included and comes first."""
+    ec2 = _FakeEC2WithSubnets(
+        [
+            {"SubnetId": "subnet-pub-a", "AvailabilityZone": "us-east-1a", "MapPublicIpOnLaunch": True},
+            {"SubnetId": "subnet-pub-b", "AvailabilityZone": "us-east-1b", "MapPublicIpOnLaunch": True},
+            {"SubnetId": "subnet-priv-b", "AvailabilityZone": "us-east-1b", "MapPublicIpOnLaunch": False},
+        ]
+    )
+    state = SimpleNamespace(subnet_ids=["subnet-pub-a", "subnet-pub-b", "subnet-priv-b"])
+
+    # Storage/compute lives in us-east-1b -> ALB should include that AZ first.
+    chosen = select_alb_subnets(ec2, state, preferred_subnet_id="subnet-priv-b")  # type: ignore[arg-type]
+
+    assert chosen[0] == "subnet-pub-b"
+    assert set(chosen) == {"subnet-pub-a", "subnet-pub-b"}
+
+
 def test_select_alb_subnets_falls_back_on_error() -> None:
     ec2 = _FakeEC2WithSubnets(error=True)
     state = SimpleNamespace(subnet_ids=["subnet-1", "subnet-2", "subnet-3"])

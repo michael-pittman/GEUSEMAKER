@@ -270,3 +270,99 @@ def test_multi_az_checking_uses_secondary_when_primary_unavailable() -> None:
 
     # Verify that both AZs were checked
     assert "us-east-1a" in ec2.az_calls or "us-east-1b" in ec2.az_calls
+
+
+class MultiAZPricing:
+    """Pricing stub exposing an explicit per-AZ spot price map."""
+
+    def __init__(self, prices: dict[str, Decimal], on_demand: Decimal) -> None:
+        self._prices = prices
+        self._on_demand = on_demand
+
+    def get_spot_prices(self, instance_type: str, region: str) -> list[SpotPrice]:  # noqa: ARG002
+        return [
+            SpotPrice(
+                instance_type=instance_type,
+                availability_zone=az,
+                price_per_hour=price,
+                timestamp=datetime.now(UTC),
+                region=region,
+            )
+            for az, price in self._prices.items()
+        ]
+
+    def get_on_demand_price(self, instance_type: str, region: str, operating_system: str = "Linux") -> OnDemandPrice:  # noqa: ARG002
+        return OnDemandPrice(
+            instance_type=instance_type,
+            price_per_hour=self._on_demand,
+            region=region,
+            operating_system=operating_system,  # type: ignore[arg-type]
+        )
+
+
+def test_price_first_beats_higher_placement_score() -> None:
+    """Cheapest viable AZ wins even when a pricier AZ has a much better placement score."""
+    pricing = MultiAZPricing(
+        {"us-east-1a": Decimal("0.010"), "us-east-1b": Decimal("0.012")},
+        on_demand=Decimal("0.0416"),
+    )
+    # AZ a is cheaper but has the *worse* placement score; price must still win.
+    ec2 = FakeEC2(code="DryRunOperation", placement_scores={"us-east-1a": 2.0, "us-east-1b": 9.0})
+    factory = FakeFactory(ec2_client=ec2)
+    service = SpotSelectionService(factory, pricing_service=pricing, region="us-east-1", ec2_client=ec2)
+
+    selection = service.select_instance_type(_config())
+
+    assert selection.is_spot is True
+    assert selection.availability_zone == "us-east-1a"
+    assert selection.price_per_hour == Decimal("0.010")
+
+
+def test_placement_score_breaks_price_tie() -> None:
+    """When prices are exactly equal, the higher placement score wins the tie-break."""
+    pricing = MultiAZPricing(
+        {"us-east-1a": Decimal("0.012"), "us-east-1b": Decimal("0.012")},
+        on_demand=Decimal("0.0416"),
+    )
+    ec2 = FakeEC2(code="DryRunOperation", placement_scores={"us-east-1a": 3.0, "us-east-1b": 9.0})
+    factory = FakeFactory(ec2_client=ec2)
+    service = SpotSelectionService(factory, pricing_service=pricing, region="us-east-1", ec2_client=ec2)
+
+    selection = service.select_instance_type(_config())
+
+    assert selection.is_spot is True
+    assert selection.availability_zone == "us-east-1b"
+
+
+def test_capacity_miss_on_cheapest_falls_to_next_cheapest_not_best_placement() -> None:
+    """A capacity miss on the cheapest AZ falls through to the next cheapest, not the best-placement AZ."""
+
+    class CapacityAwareEC2(FakeEC2):
+        def __init__(self) -> None:
+            super().__init__(
+                code="DryRunOperation",
+                # us-east-1c has the best placement score but is the most expensive.
+                placement_scores={"us-east-1a": 1.0, "us-east-1b": 2.0, "us-east-1c": 9.0},
+            )
+
+        def run_instances(self, **kwargs: object) -> dict:
+            placement = kwargs.get("Placement", {})
+            az = placement.get("AvailabilityZone") if isinstance(placement, dict) else None
+            # Cheapest AZ has no capacity; next cheapest (b) does.
+            if az == "us-east-1a":
+                raise ClientError({"Error": {"Code": "InsufficientInstanceCapacity"}}, "RunInstances")
+            return super().run_instances(**kwargs)
+
+    pricing = MultiAZPricing(
+        {"us-east-1a": Decimal("0.010"), "us-east-1b": Decimal("0.011"), "us-east-1c": Decimal("0.012")},
+        on_demand=Decimal("0.0416"),
+    )
+    ec2 = CapacityAwareEC2()
+    factory = FakeFactory(ec2_client=ec2)
+    service = SpotSelectionService(factory, pricing_service=pricing, region="us-east-1", ec2_client=ec2)
+
+    selection = service.select_instance_type(_config())
+
+    assert selection.is_spot is True
+    assert selection.availability_zone == "us-east-1b"
+    assert selection.price_per_hour == Decimal("0.011")

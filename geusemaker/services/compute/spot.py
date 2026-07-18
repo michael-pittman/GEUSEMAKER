@@ -295,8 +295,8 @@ class SpotSelectionService(BaseService):
                 source="estimated",
             )
 
-        # Try all AZs with good prices, sorted by price and placement score
-        # Filter to AZs with reasonable prices (< 80% of on-demand)
+        # Try all viable AZs price-first (cheapest wins), placement score is only a
+        # tie-breaker. Filter to AZs with reasonable prices (< 80% of on-demand).
         viable_azs = [
             (az, price) for az, price in analysis.prices_by_az.items() if price < on_demand_price * Decimal("0.8")
         ]
@@ -315,12 +315,14 @@ class SpotSelectionService(BaseService):
                 source="estimated",
             )
 
-        # Sort AZs by: 1) placement score (if available), 2) price
-        def az_score(az_price_tuple: tuple[str, Decimal]) -> tuple[float, Decimal]:
+        # Sort AZs by: 1) price ascending (cheapest first), 2) placement score
+        # descending as a tie-breaker when prices are exactly equal. Price is the
+        # primary key so we always target the best-priced viable AZ.
+        def az_score(az_price_tuple: tuple[str, Decimal]) -> tuple[Decimal, float]:
             az, price = az_price_tuple
-            # Higher placement score is better (negate for sorting)
+            # Higher placement score is better (negate so it breaks ties toward it).
             placement_score = analysis.placement_scores_by_az.get(az, 5.0)  # Default to mid-range
-            return (-placement_score, price)  # Sort by placement score desc, then price asc
+            return (price, -placement_score)  # Sort by price asc, then placement score desc
 
         viable_azs.sort(key=az_score)
 
@@ -366,12 +368,12 @@ class SpotSelectionService(BaseService):
         # Successfully selected spot instance - log the decision
         savings_pct = float((on_demand_price - selected_price) / on_demand_price * 100)
         placement_score = analysis.placement_scores_by_az.get(selected_az, 0.0)
-        selection_reason = f"Best available spot price with capacity (placement score: {placement_score:.1f})"
+        selection_reason = f"Lowest spot price with capacity (placement score: {placement_score:.1f})"
 
         LOGGER.info(
-            f"Spot instance selected in {selected_az}: "
+            f"Spot instance selected in {selected_az} (lowest viable price): "
             f"${selected_price:.4f}/hr (vs ${on_demand_price:.4f}/hr on-demand = {savings_pct:.1f}% savings). "
-            f"Stability score: {analysis.price_stability_score:.2f}, placement score: {placement_score:.1f}"
+            f"Stability score: {analysis.price_stability_score:.2f}, placement score (secondary): {placement_score:.1f}"
         )
 
         if unavailable_azs:
