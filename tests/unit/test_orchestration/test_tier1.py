@@ -14,6 +14,7 @@ from tests.unit.test_orchestration.conftest import (
     StubEFSService,
     StubIAMService,
     StubSecurityGroupService,
+    StubSpotSelector,
     StubStateManager,
     StubVPCService,
 )
@@ -63,6 +64,9 @@ def _orchestrator() -> tuple[Tier1Orchestrator, StubStateManager, StubVPCService
     orch.sg_service = StubSecurityGroupService()
     orch.ec2_service = StubEC2Service()
     orch.iam_service = StubIAMService()
+    # Deterministic selection (on-demand) keeps these infra-focused deploy tests
+    # hermetic; spot AZ-alignment behavior is covered in test_stages_networking.py.
+    orch.spot_selector = StubSpotSelector()  # type: ignore[assignment]
     state_manager = StubStateManager()
     orch.state_manager = state_manager
     return orch, state_manager, orch.vpc_service

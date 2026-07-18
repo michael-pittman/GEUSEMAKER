@@ -10,19 +10,23 @@ from __future__ import annotations
 
 import gzip
 import secrets
+from decimal import Decimal
 
 import pytest
 
 from geusemaker.models import DeploymentConfig
+from geusemaker.models.compute import InstanceSelection, SavingsComparison
 from geusemaker.orchestration.errors import OrchestrationError
 from geusemaker.orchestration.stages import (
     build_block_device_mappings,
     build_userdata_config,
     compress_userdata,
     detect_root_device,
+    launch_instance,
     resolve_ami,
 )
 from geusemaker.orchestration.stages.ami import MIN_ROOT_GB
+from geusemaker.services.spot_automation import SpotAutomationResources
 
 
 class _FakeEC2:
@@ -128,3 +132,76 @@ def test_build_userdata_config_spot_protection_names() -> None:
     assert ud.spot_protection_enabled is True
     assert ud.spot_auto_scaling_group_name == "mystack-spot-asg"
     assert ud.spot_lease_table_name == "mystack-spot-lease"
+
+
+class _StubEC2ForLaunch:
+    def wait_for_running(self, instance_id: str) -> None:  # noqa: ARG002
+        return None
+
+    def describe_instance(self, instance_id: str) -> dict:  # noqa: ARG002
+        return {"PublicIpAddress": "1.2.3.4", "PrivateIpAddress": "10.0.2.10"}
+
+
+class _CapturingSpotAutomation:
+    def __init__(self) -> None:
+        self.subnet_ids: list[str] | None = None
+
+    def create(self, *, subnet_ids: list[str], **_: object) -> SpotAutomationResources:
+        self.subnet_ids = subnet_ids
+        return SpotAutomationResources(
+            launch_template_id="lt-1",
+            auto_scaling_group_name="test-spot-asg",
+            instance_id="i-123",
+            log_group_name="/geusemaker/test/spot-events",
+            event_rule_names=(),
+            lease_table_name="test-spot-lease",
+            lifecycle_hook_names=(),
+            coordinator_function_name="test-spot-coordinator",
+            coordinator_role_name="test-spot-coordinator",
+        )
+
+
+def _spot_selection(az: str) -> InstanceSelection:
+    return InstanceSelection(
+        instance_type="g4dn.xlarge",
+        availability_zone=az,
+        is_spot=True,
+        price_per_hour=Decimal("0.20"),
+        selection_reason="test",
+        savings_vs_on_demand=SavingsComparison(
+            on_demand_hourly=Decimal("0.50"),
+            selected_hourly=Decimal("0.20"),
+            hourly_savings=Decimal("0.30"),
+            monthly_savings=Decimal("219"),
+            savings_percentage=60.0,
+        ),
+    )
+
+
+def test_spot_asg_launch_constrains_subnets_to_selected_az() -> None:
+    """The production Spot ASG must launch into the selected AZ's subnet only, not all public subnets."""
+    spot_automation = _CapturingSpotAutomation()
+    config = DeploymentConfig(stack_name="test", tier="gpu", instance_type="g4dn.xlarge")
+    vpc_info = {
+        "chosen_public_subnet_id": "subnet-selected-az",
+        "chosen_public_subnet_az": "us-east-1b",
+        # All public subnets across AZs; the ASG must NOT spread across these.
+        "public_subnet_ids": ["subnet-selected-az", "subnet-other-a", "subnet-other-c"],
+    }
+
+    info = launch_instance(
+        _StubEC2ForLaunch(),  # type: ignore[arg-type]
+        spot_automation,  # type: ignore[arg-type]
+        config,
+        vpc_info,
+        "sg-1",
+        b"#!/bin/bash\n",
+        {"profile_name": "test-profile"},
+        _spot_selection("us-east-1b"),
+        "ami-123",
+        [],
+    )
+
+    assert spot_automation.subnet_ids == ["subnet-selected-az"]
+    assert info["instance_id"] == "i-123"
+    assert info["auto_scaling_group_name"] == "test-spot-asg"

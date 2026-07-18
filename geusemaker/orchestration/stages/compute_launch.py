@@ -52,11 +52,17 @@ def launch_instance(
             "Tier": config.tier,
             "ManagedBy": "GeuseMaker",
         }
+        # Constrain the ASG to the selected spot AZ's public subnet so the initial
+        # launch actually gets the priced/validated AZ (resolve_networking already
+        # placed chosen_public_subnet_id in selection.availability_zone). Capacity
+        # Rebalancing still replaces the instance within this AZ; multi-AZ spread is
+        # intentionally traded away here so the launch price stays honest.
+        asg_subnet_ids = [chosen_public_subnet_id]
         resources = spot_automation_service.create(
             stack_name=config.stack_name,
             image_id=ami_id,
             instance_type=config.instance_type,
-            subnet_ids=vpc_info["public_subnet_ids"],
+            subnet_ids=asg_subnet_ids,
             security_group_ids=[sg_id],
             instance_profile_name=iam_info["profile_name"],
             user_data=userdata_payload,

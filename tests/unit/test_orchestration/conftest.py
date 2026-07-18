@@ -3,9 +3,44 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from geusemaker.models import SubnetResource, VPCResource
+from geusemaker.models.compute import InstanceSelection, SavingsComparison
+from geusemaker.models.deployment import DeploymentConfig
+
+
+class StubSpotSelector:
+    """Deterministic spot selector so deploy tests never touch live AWS pricing.
+
+    Returns an on-demand selection by default (no AZ constraint), which keeps the
+    infrastructure-focused deploy tests hermetic and decoupled from spot AZ
+    alignment. Tests that need a specific placement set ``orch._preselected_selection``
+    or pass ``selection`` directly (see ``select_instance_type``).
+    """
+
+    def __init__(self, selection: InstanceSelection | None = None) -> None:
+        self._selection = selection
+
+    def select_instance_type(self, config: DeploymentConfig) -> InstanceSelection:
+        if self._selection is not None:
+            return self._selection
+        on_demand = Decimal("0.0416")
+        return InstanceSelection(
+            instance_type=config.instance_type,
+            availability_zone=None,
+            is_spot=False,
+            price_per_hour=on_demand,
+            selection_reason="Stub on-demand selection",
+            savings_vs_on_demand=SavingsComparison(
+                on_demand_hourly=on_demand,
+                selected_hourly=on_demand,
+                hourly_savings=Decimal("0"),
+                monthly_savings=Decimal("0"),
+                savings_percentage=0.0,
+            ),
+        )
 
 
 class StubClientFactory:
