@@ -7,6 +7,21 @@ from click.testing import CliRunner
 
 from geusemaker.cli.commands import monitor as monitor_cmd
 from geusemaker.cli.main import cli
+from geusemaker.cli.output.verbosity import (
+    VerbosityLevel,
+    set_machine_output,
+    set_verbosity,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_output_state():
+    """Prevent the process-global verbosity/machine-output state from leaking between tests."""
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
+    yield
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
 
 
 def test_monitor_start_background_sets_pid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -96,3 +111,45 @@ def test_monitor_stop_sends_signal(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert result.exit_code == 0
     assert called["pid"] == 123
     assert pid_file.exists() is False
+
+
+def test_monitor_tui_only_stack_name_launches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--tui with just a stack name must launch the TUI monitor workspace."""
+    captured = {}
+
+    def fake_launch_tui(*, initial_screen, stack_name):  # noqa: ANN001, ANN202
+        captured["initial_screen"] = initial_screen
+        captured["stack_name"] = stack_name
+
+    monkeypatch.setattr("geusemaker.cli.commands.tui.launch_tui", fake_launch_tui)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["monitor", "demo", "--tui"])
+
+    assert result.exit_code == 0
+    assert captured == {"initial_screen": "monitor", "stack_name": "demo"}
+
+
+def test_monitor_tui_rejects_unsupported_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--tui with an option it cannot apply must fail with a helpful usage error."""
+
+    def fail_launch_tui(*, initial_screen, stack_name):  # noqa: ANN001, ANN202, ARG001
+        raise AssertionError("launch_tui must not run when options are rejected")
+
+    monkeypatch.setattr("geusemaker.cli.commands.tui.launch_tui", fail_launch_tui)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["monitor", "demo", "--tui", "--interval", "30"])
+
+    assert result.exit_code == 2
+    assert "--tui does not support these options" in result.output
+    assert "--interval" in result.output
+
+
+def test_monitor_tui_rejects_background(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--tui with --background stays rejected."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["monitor", "demo", "--tui", "--background"])
+
+    assert result.exit_code == 2
+    assert "--tui cannot be combined with --background" in result.output

@@ -50,24 +50,20 @@ class VerbosityConsole(Console):
     """
 
     def print(self, *args, **kwargs):  # type: ignore[override]
+        # Severity is decided purely from the explicit ``verbosity`` argument;
+        # there is no substring sniffing of message content. Callers that emit
+        # errors/warnings MUST pass ``verbosity="error"`` / ``"warning"`` so
+        # visibility is deterministic (an error Panel is not a string).
         level: str = kwargs.pop("verbosity", "info")
         current = _verbosity.get()
         if current == VerbosityLevel.SILENT and level != "error":
-            if not any(_looks_like_error(arg) for arg in args):
-                return
+            return
         if current == VerbosityLevel.NORMAL and level == "debug":
             return
         if _machine_output.get():
             _get_stderr_console().print(*args, **kwargs)
             return
         super().print(*args, **kwargs)
-
-
-def _looks_like_error(arg: object) -> bool:
-    if isinstance(arg, str):
-        lowered = arg.lower()
-        return "❌" in arg or "[red" in lowered or "error" in lowered
-    return False
 
 
 def set_verbosity(level: VerbosityLevel) -> None:

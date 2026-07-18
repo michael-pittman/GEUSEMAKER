@@ -65,6 +65,11 @@ def logs(
     - Real-time log streaming with --follow
     """
     output_format = OutputFormat(output.lower())
+    if follow and output_format != OutputFormat.TEXT:
+        raise click.UsageError(
+            "--follow cannot be combined with --output json|yaml; "
+            "structured output is only available for non-streaming log fetches.",
+        )
     state_manager = StateManager(base_path=Path(state_dir) if state_dir else None)
 
     # Load deployment state

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from click.core import ParameterSource
 
 from geusemaker.cli import console
 from geusemaker.cli.branding import COMPACT_BANNER, DEPLOY_BANNER, EMOJI
@@ -31,6 +32,21 @@ def _get_source(ctx: click.Context, param_name: str) -> click.core.ParameterSour
         return ctx.get_parameter_source(param_name)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _reject_unsupported_tui_options(ctx: click.Context, *, allowed: set[str]) -> None:
+    """Raise a usage error when the user explicitly set options the TUI cannot apply."""
+    unsupported = sorted(
+        f"--{name.replace('_', '-')}"
+        for name in ctx.params
+        if name not in allowed and _get_source(ctx, name) == ParameterSource.COMMANDLINE
+    )
+    if unsupported:
+        raise click.UsageError(
+            "--tui does not support these options: "
+            + ", ".join(unsupported)
+            + ". Configure them inside the TUI, or drop --tui to use them from the CLI.",
+        )
 
 
 def _emit_error(payload: dict[str, Any], output_format: OutputFormat) -> None:
@@ -280,6 +296,9 @@ def deploy(
     if tui_requested:
         if output_format != OutputFormat.TEXT:
             raise click.UsageError("--tui cannot be combined with --output json|yaml.")
+        # The TUI deploy workspace only receives the stack name; any other option set
+        # on the command line would be silently dropped, so reject the combination.
+        _reject_unsupported_tui_options(ctx, allowed={"tui", "stack_name", "output"})
         from geusemaker.cli.commands.tui import launch_tui
 
         launch_tui(initial_screen="deploy", stack_name=stack_name)

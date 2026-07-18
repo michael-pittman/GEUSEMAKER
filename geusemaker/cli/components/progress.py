@@ -58,7 +58,7 @@ class ProgressTracker:
         if self._progress:
             self._progress.__exit__(exc_type, exc, tb)
         if not is_tty() and exc:
-            console.print(f"Error: {exc}")
+            console.print(f"Error: {exc}", verbosity="error")
         return False
 
     def advance(self, description: str | None = None) -> None:

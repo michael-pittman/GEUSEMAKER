@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from click.core import ParameterSource
 from rich.live import Live
 
 from geusemaker.cli import console
@@ -35,6 +36,28 @@ class DefaultCommandGroup(click.Group):
         if self.default_cmd and args and args[0] not in self.commands:
             args.insert(0, self.default_cmd)
         super().parse_args(ctx, args)
+
+
+def _reject_unsupported_tui_options(ctx: click.Context, *, allowed: set[str]) -> None:
+    """Raise a usage error when the user explicitly set options the TUI cannot apply."""
+    unsupported = sorted(
+        f"--{name.replace('_', '-')}"
+        for name in ctx.params
+        if name not in allowed and _source(ctx, name) == ParameterSource.COMMANDLINE
+    )
+    if unsupported:
+        raise click.UsageError(
+            "--tui does not support these options: "
+            + ", ".join(unsupported)
+            + ". Configure them inside the TUI, or drop --tui to use them from the CLI.",
+        )
+
+
+def _source(ctx: click.Context, param_name: str) -> ParameterSource | None:
+    try:
+        return ctx.get_parameter_source(param_name)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _pid_path(stack_name: str) -> Path:
@@ -102,7 +125,9 @@ def monitor_group() -> None:
     show_default=True,
     help="Include PostgreSQL TCP health check.",
 )
+@click.pass_context
 def start_monitor(
+    ctx: click.Context,
     stack_name: str,
     tui: bool,
     host: str | None,
@@ -118,6 +143,9 @@ def start_monitor(
     if tui or os.environ.get("GEUSEMAKER_UI", "").lower() == "tui":
         if background:
             raise click.UsageError("--tui cannot be combined with --background.")
+        # The TUI monitor workspace only receives the stack name; any other option set
+        # on the command line would be silently dropped, so reject the combination.
+        _reject_unsupported_tui_options(ctx, allowed={"tui", "stack_name", "background"})
         from geusemaker.cli.commands.tui import launch_tui
 
         launch_tui(initial_screen="monitor", stack_name=stack_name)

@@ -2,10 +2,30 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from geusemaker.cli.main import cli
+from geusemaker.cli.output.verbosity import (
+    VerbosityLevel,
+    set_machine_output,
+    set_verbosity,
+)
 from geusemaker.models.validation import ValidationCheck, ValidationReport
+
+
+@pytest.fixture(autouse=True)
+def _reset_output_state():
+    """Keep the process-global verbosity/machine-output state from leaking between tests.
+
+    ``--output json|yaml`` flips a module-level contextvar via an eager Click callback
+    that is never reset, so a CLI invocation here would otherwise pollute later tests.
+    """
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
+    yield
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
 
 
 class PassingValidator:
@@ -200,3 +220,48 @@ def test_deploy_accepts_ami_configuration(monkeypatch):
     assert DummyOrchestrator.last_config.os_type == "ubuntu-24.04"
     assert DummyOrchestrator.last_config.architecture == "arm64"
     assert DummyOrchestrator.last_config.ami_type == "pytorch"
+
+
+def test_deploy_tui_only_stack_name_launches(monkeypatch):
+    """--tui with just a stack name must launch the TUI deploy workspace."""
+    captured = {}
+
+    def fake_launch_tui(*, initial_screen, stack_name):
+        captured["initial_screen"] = initial_screen
+        captured["stack_name"] = stack_name
+
+    monkeypatch.setattr("geusemaker.cli.commands.tui.launch_tui", fake_launch_tui)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["deploy", "--tui", "--stack-name", "demo"])
+
+    assert result.exit_code == 0
+    assert captured == {"initial_screen": "deploy", "stack_name": "demo"}
+
+
+def test_deploy_tui_rejects_unsupported_option(monkeypatch):
+    """--tui with an option it cannot apply must fail with a helpful usage error."""
+
+    def fail_launch_tui(*, initial_screen, stack_name):  # noqa: ARG001
+        raise AssertionError("launch_tui must not run when options are rejected")
+
+    monkeypatch.setattr("geusemaker.cli.commands.tui.launch_tui", fail_launch_tui)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["deploy", "--tui", "--stack-name", "demo", "--region", "us-west-2"],
+    )
+
+    assert result.exit_code == 2
+    assert "--tui does not support these options" in result.output
+    assert "--region" in result.output
+
+
+def test_deploy_tui_rejects_output_json(monkeypatch):  # noqa: ARG001
+    """--tui with --output json|yaml stays rejected."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["deploy", "--tui", "--output", "json"])
+
+    assert result.exit_code == 2
+    assert "--tui cannot be combined with --output json|yaml" in result.output

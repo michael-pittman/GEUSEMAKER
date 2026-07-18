@@ -12,8 +12,23 @@ from click.testing import CliRunner
 from moto import mock_aws
 
 from geusemaker.cli.main import cli
+from geusemaker.cli.output.verbosity import (
+    VerbosityLevel,
+    set_machine_output,
+    set_verbosity,
+)
 from geusemaker.infra.state import StateManager
 from geusemaker.models import CostTracking, DeploymentConfig, DeploymentState
+
+
+@pytest.fixture(autouse=True)
+def _reset_output_state():
+    """Prevent the process-global verbosity/machine-output state from leaking between tests."""
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
+    yield
+    set_verbosity(VerbosityLevel.NORMAL)
+    set_machine_output(False)
 
 
 def _make_state(name: str, base: Path) -> DeploymentState:
@@ -342,3 +357,18 @@ def test_logs_container_command_failure(tmp_path: Path, monkeypatch: pytest.Monk
     )
     assert result.exit_code == 1
     assert "failed" in result.output.lower()
+
+
+@mock_aws
+@pytest.mark.parametrize("fmt", ["json", "yaml"])
+def test_logs_follow_rejects_structured_output(tmp_path: Path, fmt: str) -> None:
+    """--follow with --output json|yaml must fail fast; streaming has no structured document."""
+    _make_state("demo", tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["logs", "demo", "--follow", "--output", fmt, "--state-dir", str(tmp_path)],
+    )
+    assert result.exit_code == 2
+    assert "--follow cannot be combined with --output json|yaml" in result.output
